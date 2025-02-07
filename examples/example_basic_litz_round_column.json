@@ -1,0 +1,123 @@
+{
+    "inputs": {
+        "designRequirements": {
+            "isolationSides": [
+                "primary"
+            ],
+            "magnetizingInductance": {
+                "nominal": 0.00039999999999999996
+            },
+            "name": "My Design Requirements",
+            "turnsRatios": [
+            ]
+        },
+        "operatingPoints": [
+            {
+                "conditions": {
+                    "ambientTemperature": 42
+                },
+                "excitationsPerWinding": [
+                    {
+                        "frequency": 100000,
+                        "current": {
+                            "processed": {
+                                "label": "Triangular",
+                                "peakToPeak": 0.5,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        },
+                        "voltage": {
+                            "processed": {
+                                "label": "Rectangular",
+                                "peakToPeak": 20,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        }
+                    }
+                ],
+                "name": "Operating Point No. 1"
+            }
+        ]
+    },
+    "magnetic": {
+        "coil": {
+            "bobbin": "Basic",
+            "functionalDescription":[
+                {
+                    "name": "Primary",
+                    "numberTurns": 2,
+                    "numberParallels": 1,
+                    "isolationSide": "primary",
+                    "wire": {
+                        "name": "Litz 120x0.03",
+                        "type": "litz",
+                        "numberConductors": 120,
+                        "strand": {
+                            "type": "round",
+                            "material": "copper",
+                            "numberConductors": 1,
+                            "conductingDiameter": {
+                                "nominal": 0.0003
+                            }
+                        },
+                        "outerDiameter": {
+                            "nominal": 0.0009
+                        },
+                        "coating": {
+                            "type": "insulated",
+                            "numberLayers": 3,
+                            "thicknessLayers": 7.62e-5
+                        }
+                    }
+                },
+                {
+                    "name": "Secondary",
+                    "numberTurns": 2,
+                    "numberParallels": 1,
+                    "isolationSide": "secondary",
+                    "wire": {
+                        "name": "Litz 120x0.03",
+                        "type": "litz",
+                        "numberConductors": 120,
+                        "strand": {
+                            "type": "round",
+                            "material": "copper",
+                            "numberConductors": 1,
+                            "conductingDiameter": {
+                                "nominal": 0.0003
+                            }
+                        },
+                        "outerDiameter": {
+                            "nominal": 0.00025
+                        }
+                    }
+                }
+            ]
+        },
+        "core": {
+            "name": "core_E_19_8_5_N87_substractive",
+            "functionalDescription": {
+                "type": "two-piece set",
+                "material": "N87",
+                "shape": "PQ 20/20",
+                "gapping": [{
+                    "type": "subtractive",
+                    "length": 0.0005
+                },{
+                    "type": "residual",
+                    "length": 0.00001
+                },{
+                    "type": "residual",
+                    "length": 0.00001
+                }],
+                "numberStacks": 1
+            }
+        },
+        "manufacturerInfo": {
+            "name": "",
+            "reference": "Example"
+        }
+    }
+}

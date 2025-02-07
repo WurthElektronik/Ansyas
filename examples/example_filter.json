@@ -1,0 +1,86 @@
+{
+    "inputs": {
+        "designRequirements": {
+            "isolationSides": [
+                "primary"
+            ],
+            "magnetizingInductance": {
+                "nominal": 0.00039999999999999996
+            },
+            "name": "My Design Requirements",
+            "turnsRatios": [
+            ]
+        },
+        "operatingPoints": [
+            {
+                "conditions": {
+                    "ambientTemperature": 42
+                },
+                "excitationsPerWinding": [
+                    {
+                        "frequency": 100000,
+                        "current": {
+                            "waveform": {
+                                "data": [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1]
+                            },
+                            "processed": {
+                                "label": "Triangular",
+                                "peakToPeak": 0.5,
+                                "offset": 0.25,
+                                "dutyCycle": 0.5
+                            }
+                        },
+                        "voltage": {
+                            "waveform": {
+                                "data": [-10, 10, 10, 10, 10, 10, -10, -10, -10, -10]
+                            },
+                            "processed": {
+                                "label": "Rectangular",
+                                "peakToPeak": 20,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        }
+                    }
+                ],
+                "name": "Operating Point No. 1"
+            }
+        ]
+    },
+    "magnetic": {
+        "coil": {
+            "bobbin": "Dummy",
+            "functionalDescription":[
+                {
+                    "name": "MyWinding",
+                    "numberTurns": 12,
+                    "numberParallels": 1,
+                    "isolationSide": "primary",
+                    "wire": "Round 2.00 - Grade 3"
+                }
+            ]
+        },
+        "core": {
+            "name": "filter",
+            "functionalDescription": {
+                "type": "toroidal",
+                "material": "N87",
+                "shape": {
+                    "type": "custom",
+                    "family": "t",
+                    "dimensions": {
+                        "A": {"nominal": 0.020},
+                        "B": {"nominal": 0.010},
+                        "C": {"nominal": 0.02}
+                    }
+                },
+                "gapping": [],
+                "numberStacks": 1
+            }
+        },
+        "manufacturerInfo": {
+            "name": "",
+            "reference": "example"
+        }
+    }
+}

@@ -1,0 +1,110 @@
+{
+    "inputs": {
+        "designRequirements": {
+            "isolationSides": [
+                "primary",
+                "secondary"
+            ],
+            "magnetizingInductance": {
+                "nominal": 0.00039999999999999996
+            },
+            "name": "My Design Requirements",
+            "turnsRatios": [
+                {
+                    "nominal": 1
+                }
+            ]
+        },
+        "operatingPoints": [
+            {
+                "conditions": {
+                    "ambientTemperature": 42
+                },
+                "excitationsPerWinding": [
+                    {
+                        "frequency": 100000,
+                        "current": {
+                            "processed": {
+                                "label": "Triangular",
+                                "peakToPeak": 0.5,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        },
+                        "voltage": {
+                            "processed": {
+                                "label": "Rectangular",
+                                "peakToPeak": 20,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        }
+                    },
+                    {
+                        "frequency": 100000,
+                        "current": {
+                            "processed": {
+                                "label": "Triangular",
+                                "peakToPeak": 0.5,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        },
+                        "voltage": {
+                            "processed": {
+                                "label": "Rectangular",
+                                "peakToPeak": 20,
+                                "offset": 0,
+                                "dutyCycle": 0.5
+                            }
+                        }
+                    }
+                ],
+                "name": "Operating Point No. 1"
+            }
+        ]
+    },
+    "magnetic": {
+        "coil": {
+            "bobbin": "Basic",
+            "functionalDescription":[
+                {
+                    "name": "Primary",
+                    "numberTurns": 8,
+                    "numberParallels": 1,
+                    "isolationSide": "primary",
+                    "wire": "Round 0.5 - Grade 1"
+                },
+                {
+                    "name": "Secondary",
+                    "numberTurns": 8,
+                    "numberParallels": 1,
+                    "isolationSide": "secondary",
+                    "wire": "Round 0.5 - Grade 1"
+                }
+            ]
+        },
+        "core": {
+            "name": "Custom",
+            "functionalDescription": {
+                "type": "toroidal",
+                "material": "A07",
+                "shape": {
+                    "type": "custom",
+                    "family": "t",
+                    "dimensions": {
+                        "A": {"nominal": 0.014},
+                        "B": {"nominal": 0.008},
+                        "C": {"nominal": 0.009}
+                    }
+                },
+                "gapping": [],
+                "numberStacks": 1
+            }
+        },
+        "manufacturerInfo": {
+            "name": "",
+            "reference": "Example"
+        }
+    }
+}

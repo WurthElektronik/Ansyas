@@ -1,0 +1,4 @@
+pyaedt
+numpy
+OpenMagneticsVirtualBuilder
+cadquery
