@@ -78,7 +78,10 @@ def autocomplete(mas):
 
     if magnetic.core.geometricalDescription is None:
         geometricalDescription = PyMKF.calculate_core_geometrical_description(magnetic.core.to_dict())
-        magnetic.core.geometricalDescription = geometricalDescription
+
+        magnetic.core.geometricalDescription = []
+        for description in geometricalDescription:
+            magnetic.core.geometricalDescription.append(MAS.CoreGeometricalDescriptionElement.from_dict(description))
 
     if magnetic.coil.turnsDescription is None:
         coil_json = magnetic.coil.to_dict()
