@@ -3871,23 +3871,47 @@ class CoreLossesOutput:
 
 
 @dataclass
+class ImpedanceMatrixAtFrequency:
+    frequency: float
+    """Frequency of the inductance matrix"""
+
+    magnitude: List[List[DimensionWithTolerance]]
+    phase: List[List[DimensionWithTolerance]]
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'ImpedanceMatrixAtFrequency':
+        assert isinstance(obj, dict)
+        frequency = from_float(obj.get("frequency"))
+        magnitude = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("magnitude"))
+        phase = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("phase"))
+        return ImpedanceMatrixAtFrequency(frequency, magnitude, phase)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["frequency"] = to_float(self.frequency)
+        result["magnitude"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.magnitude)
+        result["phase"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.phase)
+        return result
+
+
+@dataclass
 class InductanceMatrixAtFrequency:
     frequency: float
     """Frequency of the inductance matrix"""
 
-    matrix: List[List[DimensionWithTolerance]]
+    magnitude: List[List[DimensionWithTolerance]]
 
     @staticmethod
     def from_dict(obj: Any) -> 'InductanceMatrixAtFrequency':
         assert isinstance(obj, dict)
         frequency = from_float(obj.get("frequency"))
-        matrix = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("matrix"))
-        return InductanceMatrixAtFrequency(frequency, matrix)
+        magnitude = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("magnitude"))
+        return InductanceMatrixAtFrequency(frequency, magnitude)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["frequency"] = to_float(self.frequency)
-        result["matrix"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.matrix)
+        result["magnitude"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.magnitude)
         return result
 
 
@@ -3896,19 +3920,19 @@ class ResistanceMatrixAtFrequency:
     frequency: float
     """Frequency of the resitance matrix"""
 
-    matrix: List[List[DimensionWithTolerance]]
+    magnitude: List[List[DimensionWithTolerance]]
 
     @staticmethod
     def from_dict(obj: Any) -> 'ResistanceMatrixAtFrequency':
         assert isinstance(obj, dict)
         frequency = from_float(obj.get("frequency"))
-        matrix = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("matrix"))
-        return ResistanceMatrixAtFrequency(frequency, matrix)
+        magnitude = from_list(lambda x: from_list(DimensionWithTolerance.from_dict, x), obj.get("magnitude"))
+        return ResistanceMatrixAtFrequency(frequency, magnitude)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["frequency"] = to_float(self.frequency)
-        result["matrix"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.matrix)
+        result["magnitude"] = from_list(lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), self.magnitude)
         return result
 
 
@@ -3929,6 +3953,9 @@ class ImpedanceOutput:
     resistanceMatrix: List[ResistanceMatrixAtFrequency]
     """List of resistance matrix per frequency"""
 
+    impedanceMatrix: Optional[List[ImpedanceMatrixAtFrequency]] = None
+    """List of impedance matrix per frequency"""
+
     @staticmethod
     def from_dict(obj: Any) -> 'ImpedanceOutput':
         assert isinstance(obj, dict)
@@ -3936,7 +3963,8 @@ class ImpedanceOutput:
         methodUsed = from_str(obj.get("methodUsed"))
         origin = ResultOrigin(obj.get("origin"))
         resistanceMatrix = from_list(ResistanceMatrixAtFrequency.from_dict, obj.get("resistanceMatrix"))
-        return ImpedanceOutput(inductanceMatrix, methodUsed, origin, resistanceMatrix)
+        impedanceMatrix = from_union([lambda x: from_list(ImpedanceMatrixAtFrequency.from_dict, x), from_none], obj.get("impedanceMatrix"))
+        return ImpedanceOutput(inductanceMatrix, methodUsed, origin, resistanceMatrix, impedanceMatrix)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -3944,6 +3972,8 @@ class ImpedanceOutput:
         result["methodUsed"] = from_str(self.methodUsed)
         result["origin"] = to_enum(ResultOrigin, self.origin)
         result["resistanceMatrix"] = from_list(lambda x: to_class(ResistanceMatrixAtFrequency, x), self.resistanceMatrix)
+        if self.impedanceMatrix is not None:
+            result["impedanceMatrix"] = from_union([lambda x: from_list(lambda x: to_class(ImpedanceMatrixAtFrequency, x), x), from_none], self.impedanceMatrix)
         return result
 
 

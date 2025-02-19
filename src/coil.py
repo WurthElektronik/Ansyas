@@ -22,11 +22,12 @@ class Coil:
         )
 
         conducting_section_names = self.project.modeler.get_objects_w_string(f"{turn_object.name}_Section")
-        assert len(conducting_section_names) == 1
+        if len(conducting_section_names) != 1:
+            raise AttributeError("Conducting section not found")
+
         conducting_section = self.project.modeler.get_object_from_name(conducting_section_names[0])
 
         sections = self.project.modeler.separate_bodies(conducting_section)
-        assert len(sections) == 2
         conducting_section = sections[0]
         self.project.modeler.delete(sections[1])
 
@@ -46,11 +47,12 @@ class Coil:
         )
 
         conducting_section_names = self.project.modeler.get_objects_w_string(f"{turn_object.name}_Section")
-        assert len(conducting_section_names) == 1
+        if len(conducting_section_names) != 1:
+            raise AttributeError("Conducting section not found")
+
         conducting_section = self.project.modeler.get_object_from_name(conducting_section_names[0])
 
         sections = self.project.modeler.separate_bodies(conducting_section)
-        assert len(sections) == 2
         conducting_section = sections[0]
         self.project.modeler.delete(sections[1])
 
@@ -109,7 +111,7 @@ class Coil:
                 outer_width = ansyas_utils.resolve_dimensional_values(wire.outerWidth)
                 outer_height = ansyas_utils.resolve_dimensional_values(wire.outerHeight)
             else:
-                assert 0, "Only rectangular and foil wire should reach this point"
+                raise RuntimeError("Only rectangular and foil wire should use this method")
 
             if is_insulation and (outer_width <= wire_minus_insulation_width or outer_height <= wire_minus_insulation_height):
                 return None
@@ -144,7 +146,7 @@ class Coil:
             conductivity = 1.0 / material.resistivity[0].value
             aedt_material.conductivity = conductivity
         else:
-            assert 0, "Unknown resistivity data type"
+            raise AttributeError(f"Material {material.name} is missing resistivity")
 
     def assign_turn_losses_as_heat_source(self, turns, windingLossesPerTurn):
         for turn_index, turn in enumerate(turns):
@@ -282,7 +284,8 @@ class ConcentricCoil(Coil):
                     non_model=False
                 )
 
-            assert turn_width_half_side_section is not None, "Turn not created"
+            if turn_width_half_side_section is None:
+                raise RuntimeError("Turn not created, check your turn description")
 
             turn_width_half_side = self.project.modeler.sweep_along_vector(
                 assignment=turn_width_half_side_section,
@@ -330,7 +333,7 @@ class ConcentricCoil(Coil):
                 if not result:
                     self.project.modeler.delete(turn_corner)
                     if self.number_segments_arcs_corners == 0:
-                        assert 0, "Something went wrong even with rounds corners :("
+                        raise RuntimeError("Something went wrong even with rounds corners :(")
                     self.number_segments_arcs_corners = 0
                 else:
                     turn_corner.move(ansyas_utils.convert_axis(turn.coordinates))
@@ -462,7 +465,8 @@ class ConcentricCoil(Coil):
                 non_model=False
             )
 
-            assert layer_width_half_side_section is not None, "layer not created"
+            if layer_width_half_side_section is None:
+                raise RuntimeError("Layer not created, check your turn description")
 
             layer_width_half_side = self.project.modeler.sweep_along_vector(
                 assignment=layer_width_half_side_section,
@@ -500,7 +504,7 @@ class ConcentricCoil(Coil):
                 if not result:
                     self.project.modeler.delete(layer_corner)
                     if self.number_segments_arcs_corners == 0:
-                        assert 0, "Something went wrong even with rounds corners :("
+                        raise RuntimeError("Something went wrong even with rounds corners :(")
                     self.number_segments_arcs_corners = 0
                 else:
                     layer_corner.move(ansyas_utils.convert_axis(layer.coordinates))
@@ -594,10 +598,17 @@ class ToroidalCoil(Coil):
                 if winding.name == turn_data.winding:
                     wire = winding.wire
 
+            internal_turn_angle = 0
+            turn_angle = 0
+            if turn_data.additionalCoordinates is not None:
+                turn_angle = math.atan2(turn_data.coordinates[1], turn_data.coordinates[0])
+                internal_turn_angle = round(turn_angle - math.atan2(turn_data.additionalCoordinates[0][1] - turn_data.coordinates[1], turn_data.additionalCoordinates[0][0] - turn_data.coordinates[0]), 12)
+
             turn_data_raw = {
                 "wire": wire,
                 "length": round(turn_data.length, 9),
                 "section": turn_data.section,
+                "internal_turn_angle": internal_turn_angle,
             }
             turn_data_hash = hashlib.sha256(str(turn_data_raw).encode()).hexdigest()
 
@@ -671,7 +682,8 @@ class ToroidalCoil(Coil):
                     non_model=False
                 )
 
-                assert turn.additionalCoordinates is not None
+                if turn.additionalCoordinates is None:
+                    raise RuntimeError("Turn is missing additional coordinates")
 
                 additional_turn_section = self.project.modeler.create_circle(
                     orientation=pyaedt.constants.PLANE.XY,
@@ -684,11 +696,11 @@ class ToroidalCoil(Coil):
                     non_model=False
                 )
 
-                assert turn_section is not None, "Turn not created"
+                if turn_section is None:
+                    raise RuntimeError("Turn not created, check your turn description")
 
             else:
                 wire_object_width, wire_object_height = self.get_wire_object_radius(wire, is_insulation)
-                wire_turn_center_height = wire_object_width / 2
 
                 if wire_object_width is None or wire_object_height is None:
                     return None
@@ -706,7 +718,8 @@ class ToroidalCoil(Coil):
                     non_model=False
                 )
 
-                assert turn.additionalCoordinates is not None
+                if turn.additionalCoordinates is None:
+                    raise RuntimeError("Turn is missing additional coordinates")
 
                 origin = ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0])
                 origin[0] -= wire_object_height / 2
@@ -721,8 +734,8 @@ class ToroidalCoil(Coil):
                     non_model=False
                 )
 
-                assert turn_section is not None, "Turn not created"
-
+                if turn.additionalCoordinates is None:
+                    raise RuntimeError("Turn is missing additional coordinates")
 
             turn_object = self.project.modeler.sweep_along_vector(
                 assignment=turn_section,
@@ -733,7 +746,6 @@ class ToroidalCoil(Coil):
 
             additional_turn_radius = math.hypot(turn.additionalCoordinates[0][0], turn.additionalCoordinates[0][1])
             additional_turn_radial_height = additional_turn_radius - (bobbin.processedDescription.windingWindows[0].radialHeight + bobbin.processedDescription.columnWidth * 2)
-
 
             additional_turn_object = self.project.modeler.sweep_along_vector(
                 assignment=additional_turn_section,
@@ -791,7 +803,7 @@ class ToroidalCoil(Coil):
                 if not result:
                     self.project.modeler.delete(turn_top_internal_corner)
                     if self.number_segments_arcs_corners == 0:
-                        assert 0, "Something went wrong even with rounds corners :("
+                        raise RuntimeError("Something went wrong even with rounds corners :(")
                     self.number_segments_arcs_corners = 0
                 else:
                     turn_internal_face = turn_top_internal_corner.faces[1]
@@ -840,7 +852,7 @@ class ToroidalCoil(Coil):
                 if not result:
                     self.project.modeler.delete(turn_top_internal_corner)
                     if self.number_segments_arcs_corners == 0:
-                        assert 0, "Something went wrong even with rounds corners :("
+                        raise RuntimeError("Something went wrong even with rounds corners :(")
                     self.number_segments_arcs_corners = 0
                 else:
                     additional_turn_internal_face = turn_top_external_corner.faces[1]
@@ -849,7 +861,6 @@ class ToroidalCoil(Coil):
                     turn_top_external_corner.rotate(pyaedt.constants.AXIS.Z, real_turn_rotation)
                     turn_top_external_corner.move(ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0]))
                     additional_turn_internal_face = ansyas_utils.get_closest_face(turn_top_external_corner, center_point_aprox)
-
 
             top_part_vector = [additional_turn_internal_face.center[0] - turn_internal_face.center[0],
                                additional_turn_internal_face.center[1] - turn_internal_face.center[1],
@@ -861,7 +872,8 @@ class ToroidalCoil(Coil):
                 sweep_vector=top_part_vector
             )
             turn_top = self.project.modeler.get_object_from_name(self.project.modeler.unite([turn_top, turn_object, turn_top_internal_corner, additional_turn_object, turn_top_external_corner]))
-            turn_bottom = self.project.modeler.get_object_from_name(self.project.modeler.duplicate_and_mirror(
+            turn_bottom = self.project.modeler.get_object_from_name(
+                self.project.modeler.duplicate_and_mirror(
                     assignment=turn_top,
                     origin=[0, 0, 0],
                     vector=[0, 0, -1],
@@ -895,289 +907,3 @@ class ToroidalCoil(Coil):
         return turn_object, turn_insulation_object
 
         return turn_object, None
-
-
-class ConcentricSpiralCoil(Coil):
-    def create_coil(self, coil: MAS.Coil):
-        turns_and_terminals = []
-
-        prev_turn_data_hash = -1
-        prev_turn = None
-        prev_turn_coordinates = None
-        prev_turn_insulation = None
-
-        step_per_layer = {}
-        turns_per_layer = []
-        for layer_index, layer_data in enumerate(coil.layersDescription):
-            if layer_data.type == MAS.ElectricalType.insulation:
-                continue
-            print(layer_data)
-            turns_in_layer = []
-            numberParallelsInLayer = [x for x in layer_data.partialWindings[0].parallelsProportion if x > 0.0]
-            if len(numberParallelsInLayer) > 1:
-                assert 0, "Only one parallel per layer for now"
-            for turn_index, turn_data in enumerate(coil.turnsDescription):
-                if (turn_data.layer == layer_data.name):
-                    turns_in_layer.append(turn_data)
-
-            if len(turns_in_layer) > 1:
-                step_per_layer[layer_data.name] = turns_in_layer[0].coordinates[1] - turns_in_layer[1].coordinates[1]
-            else:
-                step_per_layer[layer_data.name] = turns_in_layer[0].dimensions[1]
-
-            turns_per_layer.append(turns_in_layer)
-
-        turns_object_per_layer = []
-        for turns_in_layer in turns_per_layer:
-            turns = []
-            for turn_index, turn_data in enumerate(turns_in_layer):
-                for winding in coil.functionalDescription:
-                    if winding.name == turn_data.winding:
-                        wire = winding.wire
-
-                turn_data_raw = {
-                    "wire": wire,
-                    "length": turn_data.length,
-                    "section": turn_data.section,
-                    "additionalCoordinates": turn_data.additionalCoordinates,
-                }
-                turn_data_hash = hashlib.sha256(str(turn_data_raw).encode()).hexdigest()
-
-                # print(turn_data)
-                cloned = False
-                if turn_data_hash == prev_turn_data_hash:
-                    try:
-                        print(f"Cloning previous turn into {turn_data.name}")
-                        turn = prev_turn.clone()
-                        turn.name = f"{ansyas_utils.clean_name(turn_data.name)}"
-                        coordinates = ansyas_utils.convert_axis(turn_data.coordinates)
-                        turn.move([coordinates[0] - prev_turn_coordinates[0], coordinates[1] - prev_turn_coordinates[1], coordinates[2] - prev_turn_coordinates[2]])
-                        if prev_turn_insulation is not None:
-                            turn_insulation = prev_turn_insulation.clone()
-                            turn_insulation.name = f"{ansyas_utils.clean_name(turn_insulation.name)}_insulation"
-                        cloned = True
-                    except AttributeError:
-                        pass
-
-                if not cloned:
-                    print(f"Creating turn {turn_data.name}")
-                    turn, turn_insulation = self.create_turn(
-                        turn=turn_data,
-                        wire=wire,
-                        bobbin=coil.bobbin,
-                        step=step_per_layer[turn_data.layer]
-                    )
-                    prev_turn_data_hash = turn_data_hash
-                    prev_turn_coordinates = ansyas_utils.convert_axis(turn_data.coordinates)
-                    prev_turn = turn
-                    prev_turn_insulation = turn_insulation
-
-                if self.project.solution_type == "EddyCurrent" or self.project.solution_type == "Transient" or self.project.solution_type == "TransientAPhiFormulation":
-                    assert 0, "Not possinle with this solution type"
-                elif self.project.solution_type == "Electrostatic":
-                    # turn_terminal = self.get_turn_terminal(
-                    #     turn_object=turn
-                    # )
-                    turns.append(turn)
-
-            turns = self.project.modeler.get_object_from_name(self.project.modeler.unite(turns))
-            turns_object_per_layer.append(turns)
-        return turns_object_per_layer
-
-    def create_turn(self, turn: MAS.Turn, wire: MAS.Wire, bobbin: MAS.Bobbin, step: float):
-        def create_primitive_rectangular_turn(turn: MAS.Turn, wire: MAS.Wire, bobbin: MAS.Bobbin, is_insulation=False):
-            converted_turn_coordinates = ansyas_utils.convert_axis(turn.coordinates)
-            wire_material = self.get_wire_material(wire, is_insulation)
-
-            if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
-                wire_object_radius = self.get_wire_object_radius(wire, is_insulation)
-
-                if wire_object_radius is None:
-                    return None
-                    
-                turn_width_half_side_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.YZ,
-                    origin=converted_turn_coordinates,
-                    radius=wire_object_radius,
-                    num_sides=self.number_segments_arcs,
-                    is_covered=True,
-                    name=f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}",
-                    material=wire_material,
-                    non_model=False
-                )
-
-            else:
-                wire_object_width, wire_object_height = self.get_wire_object_radius(wire, is_insulation)
-
-                if wire_object_width is None or wire_object_height is None:
-                    return None
-
-                origin = converted_turn_coordinates
-                origin[1] -= wire_object_width / 2
-                origin[2] -= wire_object_height / 2
-                    
-                turn_width_half_side_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.YZ,
-                    origin=origin,
-                    sizes=[wire_object_width, wire_object_height],
-                    is_covered=True,
-                    name=f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}",
-                    material=wire_material,
-                    non_model=False
-                )
-
-            assert turn_width_half_side_section is not None, "Turn not created"
-
-            turn_width_half_side = self.project.modeler.sweep_along_vector(
-                assignment=turn_width_half_side_section,
-                sweep_vector=[bobbin.processedDescription.columnDepth, 0, 0]
-            )
-
-            turn_radius = turn.coordinates[0]
-            turn_turn_radius = turn_radius - bobbin.processedDescription.columnWidth
-
-            result = False
-            while not result:
-                if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
-                    turn_corner_circle = self.project.modeler.create_circle(
-                        orientation=pyaedt.constants.PLANE.YZ,
-                        origin=[0, turn_turn_radius, 0],
-                        radius=wire_object_radius,
-                        num_sides=self.number_segments_arcs,
-                        is_covered=True,
-                        name=f"{ansyas_utils.clean_name(turn.name)}_internal_corner{'_copper' if not is_insulation else '_insulation'}",
-                        material=wire_material,
-                        non_model=False
-                    )
-                else:
-                    origin = [0, turn_turn_radius - wire_object_width / 2, -wire_object_height / 2]
-                        
-                    turn_corner_circle = self.project.modeler.create_rectangle(
-                        orientation=pyaedt.constants.PLANE.YZ,
-                        origin=origin,
-                        sizes=[wire_object_width, wire_object_height],
-                        is_covered=True,
-                        name=f"{ansyas_utils.clean_name(turn.name)}_internal_corner{'_copper' if not is_insulation else '_insulation'}",
-                        material=wire_material,
-                        non_model=False
-                    )
-
-                turn_corner = self.project.modeler.sweep_around_axis(
-                    assignment=turn_corner_circle,
-                    axis=pyaedt.constants.AXIS.Z,
-                    sweep_angle=-90,
-                    draft_angle=0,
-                    number_of_segments=self.number_segments_arcs_corners
-                )
-                result = turn_corner.move([bobbin.processedDescription.columnDepth, -turn_turn_radius , 0])
-
-                if not result:
-                    self.project.modeler.delete(turn_corner)
-                    if self.number_segments_arcs_corners == 0:
-                        assert 0, "Something went wrong even with rounds corners :("
-                    self.number_segments_arcs_corners = 0
-                else:
-                    turn_corner.move(ansyas_utils.convert_axis(turn.coordinates))
-
-            turn_depth_half_side_section = ansyas_utils.get_closest_face(turn_corner, position=[bobbin.processedDescription.columnDepth + turn_turn_radius, 0, ansyas_utils.convert_axis(turn.coordinates)[2]]).create_object()
-
-            turn_depth_half_side = self.project.modeler.sweep_along_vector(
-                assignment=turn_depth_half_side_section,
-                sweep_vector=[0, -bobbin.processedDescription.columnWidth, 0]
-            )
-            turn_00 = self.project.modeler.get_object_from_name(self.project.modeler.unite([turn_width_half_side, turn_corner, turn_depth_half_side]))
-
-            turn_01 = self.project.modeler.get_object_from_name(self.project.modeler.duplicate_and_mirror(
-                assignment=turn_00,
-                origin=[0, 0, 0],
-                vector=[0, -1, 0],
-            )[0]
-            )
-            turn_0 = self.project.modeler.get_object_from_name(self.project.modeler.unite([turn_00, turn_01]))
-
-            turn_1 = self.project.modeler.get_object_from_name(self.project.modeler.duplicate_and_mirror(
-                assignment=turn_0,
-                origin=[0, 0, 0],
-                vector=[-1, 0, 0],
-            )[0]
-            )
-            turn_object = self.project.modeler.get_object_from_name(self.project.modeler.unite([turn_0, turn_1]))
-
-            return turn_object
-
-        def create_primitive_round_turn(turn: MAS.Turn, wire: MAS.Wire, bobbin: MAS.Bobbin, is_insulation=False):
-            wire_material = self.get_wire_material(wire, is_insulation)
-            wire_object_height = 0
-            if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
-                wire_object_radius = self.get_wire_object_radius(wire, is_insulation)
-                wire_object_height = wire_object_radius * 2
-                if wire_object_radius is None:
-                    return None
-
-                turn_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.YZ,
-                    origin=ansyas_utils.convert_axis(turn.coordinates),
-                    radius=wire_object_radius,
-                    num_sides=self.number_segments_arcs,
-                    is_covered=True,
-                    name=f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}",
-                    material=wire_material,
-                    non_model=False
-                )
-            else:
-                wire_object_width, wire_object_height = self.get_wire_object_radius(wire, is_insulation)
-
-                if wire_object_width is None or wire_object_height is None:
-                    return None
-
-                origin = ansyas_utils.convert_axis(turn.coordinates)
-                origin[1] -= wire_object_width / 2
-                origin[2] -= wire_object_height / 2
-                turn_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.YZ,
-                    origin=origin,
-                    sizes=[wire_object_width, wire_object_height],
-                    is_covered=True,
-                    name=f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}",
-                    material=wire_material,
-                    non_model=False
-                )
-
-            turn_object = self.project.modeler.create_helix(
-                assignment=turn_section.name,
-                origin=[0, 0, -step / 2 + ansyas_utils.convert_axis(turn.coordinates)[2]],
-                x_start_dir=0,
-                y_start_dir=0,
-                z_start_dir=1,
-                turns=1,
-                right_hand=True,
-                radius_increment=0.0,
-                thread=step,
-                num_sides=self.number_segments_arcs,
-            )
-
-            return turn_object
-
-        if bobbin.processedDescription.columnShape is MAS.ColumnShape.round:
-            turn_object = create_primitive_round_turn(turn, wire, bobbin, is_insulation=False)
-        else:
-            turn_object = create_primitive_rectangular_turn(turn, wire, bobbin, is_insulation=False)
-
-        turn_insulation_object = None
-        if self.add_insulation:
-            if bobbin.processedDescription.columnShape is MAS.ColumnShape.round:
-                turn_insulation_object = create_primitive_round_turn(turn, wire, bobbin, is_insulation=True)
-            else:
-                turn_insulation_object = create_primitive_rectangular_turn(turn, wire, bobbin, is_insulation=True)
-            if turn_insulation_object is not None:
-                turn_insulation_object.subtract(turn_object, True)
-
-        if wire.type is MAS.WireType.litz:
-            turn_object.color = ansyas_utils.color_litz
-        else:
-            turn_object.color = ansyas_utils.color_copper
-
-        if turn_insulation_object is not None:
-            turn_insulation_object.color = ansyas_utils.color_teflon
-        return turn_object, turn_insulation_object
-

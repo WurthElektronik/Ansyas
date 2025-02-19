@@ -5,8 +5,33 @@ import MAS_models as MAS
 import PyMKF
 
 
-def autocomplete(mas):
+def autocomplete(mas: [MAS.Mas, dict]):
+    """Checks and autocompletes any missing field in the input MAS file.
 
+    MAS files have many optional fields, as it must be easy to specify a working
+    minimum design, but must be able to unambiguously define a magnetic. Because
+    of that it is possible that a file is missing some optional fields. This
+    method autocompletes them and make sure all the information needed by Ansyas
+    is available, keeping the dependency of PyMKF contained here.
+
+    Parameters
+    ----------
+    mas : MAS.Mas, dict
+        Mas file or dict containing the information about the magnetic, its
+        inputs, and outputs.
+
+    Examples
+    --------
+    Load a minimum MAS file and autocompletes it.
+
+    >>> import json
+    >>> import mas_autocomplete
+
+    >>> f = open("tests/mas_files/simple_inductor_round_column.json)
+    >>> mas_dict = json.load(f)
+    >>> mas = mas_autocomplete.autocomplete(mas_dict)
+
+    """
     if isinstance(mas, dict):
         if "outputs" not in mas:
             mas["outputs"] = []

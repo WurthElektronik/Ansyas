@@ -23,17 +23,16 @@ class Excitation:
             coil.functionalDescription[winding_index].name = coil.functionalDescription[winding_index].name.replace(" ", "_")
 
         if self.project.solution_type in ["Transient", "TransientAPhiFormulation"]:
-            assert operating_point is not None
+            if operating_point is None:
+                raise AttributeError("Operating point is missing")
             for winding_index, winding_data in enumerate(coil.functionalDescription):
                 excitation = operating_point.excitationsPerWinding[winding_index]
                 current = excitation.current
                 voltage = excitation.voltage
-                assert current.waveform is not None
-                assert current.waveform.data is not None
-                assert current.waveform.time is not None
-                assert voltage.waveform is not None
-                assert voltage.waveform.data is not None
-                assert voltage.waveform.time is not None
+                if current.waveform is None or current.waveform.data is None or current.waveform.time is None:
+                    raise AttributeError("Current waveform is missing")
+                if voltage.waveform is None or voltage.waveform.data is None or voltage.waveform.time is None:
+                    raise AttributeError("Current waveform is missing")
 
                 data = []
                 for datum in current.waveform.data:

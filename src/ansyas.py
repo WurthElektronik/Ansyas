@@ -44,9 +44,74 @@ class Ansyas:
         self.project.analyze()
 
     def set_units(self, units):
+        """Sets the units of the modeler.
+
+        Parameters
+        ----------
+        units : str
+            Units to sue in the model of the magnetic.
+
+
+        Examples
+        --------
+        Sets units to meters.
+
+
+        >>> ansyas.set_units("meter")
+
+        """
         self.project.modeler.model_units = units
 
-    def create_project(self, outputs_folder, project_name, non_graphical, new_desktop_session, solution_type="EddyCurrent", specified_version=None):
+    def create_project(self, outputs_folder, project_name, non_graphical=False, new_desktop_session=False, solution_type="EddyCurrent", specified_version=None):
+        """Create a project for the given inputs.
+
+        Configures Ansyas and create an Ansys project with the requested inputs.
+
+        Parameters
+        ----------
+        mas : MAS.Mas, dict
+            Mas file or dict containing the information about the magnetic, its
+            inputs, and outputs.
+        non_graphical : str
+            Path to store the output project.
+        project_name : str
+            Name of the project.
+        non_graphical : bool
+            Whether to launch AEDT in non-graphical mode. The default
+            is ``False``, in which case AEDT is launched in graphical
+            mode. This parameter is ignored when a script is launched within
+            AEDT.
+        non_graphical : bool, optional
+            Whether to launch AEDT in non-graphical mode. The default
+            is ``False``, in which case AEDT is launched in graphical
+            mode. This parameter is ignored when a script is launched within
+            AEDT.
+        new_desktop_session : bool, optional
+            Whether to launch an instance of AEDT in a new thread, even if
+            another instance of the ``specified_version`` is active on the
+            machine. The default is ``False``. This parameter is ignored
+            when a script is launched within AEDT.
+        solution_type : str, optional
+            Solution type to apply to the design. The default is
+            ``EddyCurrent``.
+        specified_version : str
+            Version of AEDT  to use.
+
+        Examples
+        --------
+        Creates an Icepak design.
+
+
+        >>> from src.ansyas import Ansyas
+        >>> project = ansyas.create_project(
+            outputs_folder=outputs_folder,
+            project_name=project_name,
+            non_graphical=non_graphical,
+            solution_type="SteadyState",
+            new_desktop_session=new_desktop_session
+        )
+
+        """
         project_name = f"{project_name}.aedt"
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), outputs_folder)
 
@@ -81,7 +146,7 @@ class Ansyas:
             )
             self.project.change_design_settings({"ComputeTransientCapacitance": True})
             self.project.change_design_settings({"ComputeTransientInductance": True})
-            self.project.mesh.assign_initial_mesh_from_slider(self.initial_mesh_configuration, applycurvilinear=True)
+            self.project.mesh.assign_initial_mesh_from_slider(self.initial_mesh_configuration, curvilinear=True)
 
         self.project.autosave_disable()
 
@@ -178,7 +243,6 @@ class Ansyas:
             region = self.project.modeler.create_air_region(x_pos=50, y_pos=50, z_pos=50, x_neg=50, y_neg=50, z_neg=50)
             if region is None or region is False:
                 region = self.project.modeler.get_objects_w_string("Region")
-                assert len(region) == 1
                 region = self.project.modeler.get_object_from_name(region[0])
 
             return region
@@ -186,14 +250,12 @@ class Ansyas:
             region = self.project.modeler.create_region(pad_percent=[padding["x_pos"], padding["x_neg"], padding["y_pos"], padding["y_neg"], padding["z_pos"], padding["z_neg"]], is_percentage=True)
             if region is None or region is False:
                 region = self.project.modeler.get_objects_w_string("Region")
-                assert len(region) == 1
                 region = self.project.modeler.get_object_from_name(region[0])
 
             return region
 
     def create_boundary_conditions(self, conditions):
         region = self.project.modeler.get_objects_w_string("Region")
-        assert len(region) == 1
         region = self.project.modeler.get_object_from_name(region[0])
 
         if conditions.cooling is None or conditions.cooling.velocity is None:
@@ -262,7 +324,46 @@ class Ansyas:
             # name=None
         )
 
-    def create_magnetic(self, mas: MAS.Mas):
+    def create_magnetic_simulation(self, mas: [MAS.Mas, dict], simulate=False):
+        """Create an automatic simulation form the mas file.
+
+        Parameters
+        ----------
+        mas : MAS.Mas, dict
+            Mas file or dict containing the information about the magnetic, its
+            inputs, and outputs.
+        simulate : bool, optional
+            Runs the simulation and capture outputs if true. The default
+            is ``False``, 
+
+
+        Examples
+        --------
+        Import a MAS file from a json and simulate its temperature.
+        
+
+        >>> import json
+        >>> import os
+
+        >>> f = open("tests/mas_files/simple_inductor_round_column.json)
+        >>> mas_dict = json.load(f)
+
+        >>> outputs_folder = os.path.dirname(__file__) + "/outputs"
+        >>> outputs_folder = "example"
+
+        >>> project = ansyas.create_project(
+            outputs_folder=outputs_folder,
+            project_name=project_name,
+            solution_type="SteadyState",
+        )
+        >>> ansyas.set_units("meter")
+        >>> ansyas.create_magnetic_simulation(
+            mas=mas,
+            simulate=True
+        )
+
+
+        """
         if isinstance(mas, dict):
             mas = MAS.Mas.from_dict(mas)
 
@@ -316,6 +417,8 @@ class Ansyas:
             )
 
         self.fit()
-        # self.analyze()
-        # self.outputs_extractor.get_results()
-        # self.project.release_desktop(close_projects=False, close_desktop=False)
+
+        if simulate:
+            self.analyze()
+            self.outputs_extractor.get_results()
+            self.project.release_desktop(close_projects=False, close_desktop=False)

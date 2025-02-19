@@ -18,7 +18,7 @@ class Outputs:
 
     def get_results(self):
 
-        def get_category_data(category):
+        def get_category_data(category, include_phase=False):
             category_data = []
             available_report_quantities = self.project.post.available_report_quantities(context={"solution_matrix": "windings"}, quantities_category=category)
             data = self.project.post.get_solution_data(expressions=available_report_quantities, context={"solution_matrix": "windings"})
@@ -28,9 +28,13 @@ class Outputs:
             if data.units_sweeps == "GHz":
                 frequency_multiplier = 1e9
             for frequency in [x * frequency_multiplier for x in data.primary_sweep_values]:
-                matrix_per_frequency = {"frequency": frequency, "matrix": []}
+                matrix_per_frequency = {"frequency": frequency, "magnitude": []}
                 for _ in range(number_windings):
-                    matrix_per_frequency["matrix"].append([None] * number_windings)
+                    matrix_per_frequency["magnitude"].append([None] * number_windings)
+                if include_phase:
+                    matrix_per_frequency["phase"] = []
+                    for _ in range(number_windings):
+                        matrix_per_frequency["phase"].append([None] * number_windings)
 
                 category_data.append(matrix_per_frequency) 
 
@@ -39,7 +43,11 @@ class Outputs:
                 vertical_winding_index = expression_index % number_windings
                 data_per_frequency = data.data_magnitude(expression=expression, convert_to_SI=True)
                 for frequency_index, datum in enumerate(data_per_frequency):
-                    category_data[frequency_index]["matrix"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
+                    category_data[frequency_index]["magnitude"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
+                if include_phase:
+                    data_per_frequency = data.data_phase(expression=expression)
+                    for frequency_index, datum in enumerate(data_per_frequency):
+                        category_data[frequency_index]["phase"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
 
             return category_data
 
@@ -47,8 +55,11 @@ class Outputs:
             "methodUsed": "Ansys Maxwell",
             "origin": MAS.ResultOrigin.simulation,
             "inductanceMatrix": get_category_data("L"),
-            "resistanceMatrix": get_category_data("R")
+            "resistanceMatrix": get_category_data("R"),
+            "impedanceMatrix": get_category_data("Z", True),
         }
+        import pprint
+        pprint.pprint(impedance_dict)
         impedance = MAS.ImpedanceOutput.from_dict(impedance_dict)
 
         return impedance

@@ -33,7 +33,7 @@ class Core:
                     y_unit="",
                 )
             else:
-                assert 0, "Complex imag Perm"
+                raise AttributeError(f"Material {material.name} is missing complex permeability")
             if isinstance(material.permeability.complex.real, list) and len(material.permeability.complex.real) > 1:
                 frequency_values = []
                 complex_real_permeability_values = []
@@ -50,7 +50,7 @@ class Core:
                 )
 
             else:
-                assert 0, "Complex imag Perm"
+                raise AttributeError(f"Material {material.name} is missing complex permeability")
 
             aedt_material.permeability = f"sqrt(pow(pwl($material_{material.name}_complexRealPermeability, Freq), 2) + pow(pwl($material_{material.name}_complexImaginaryPermeability, Freq), 2))"
             aedt_material.permeability = f"pwl($material_{material.name}_complexRealPermeability, Freq)"
@@ -74,7 +74,6 @@ class Core:
                 aedt_material.conductivity = conductivity
             else:
                 aedt_material.permeability = material.permeability.initial.value
-                assert 0, "Perm"
 
         if isinstance(material.resistivity, list) and len(material.resistivity) > 1:
             temperature_values = []
@@ -93,7 +92,7 @@ class Core:
             conductivity = 1.0 / material.resistivity[0].value
             aedt_material.conductivity = conductivity
         else:
-            assert 0, "Unknown resistivity data type"
+            raise AttributeError(f"Material {material.name} is missing resistivity")
 
         for methodData in material.volumetricLosses["default"]:
             if methodData.method == MAS.CoreLossesMethodType.lossFactor:
@@ -162,7 +161,7 @@ class Core:
         if len(core_parts) == 0:
             core_parts = [self.project.modeler.get_object_from_name(x) for x in self.project.modeler.get_objects_w_string("core")]
         if len(core_parts) == 0:
-            assert 0, "Core not found or not imported"
+            raise ImportError("Core not found or not imported")
 
         for core_part_index, core_part in enumerate(core_parts):
             self.project.assign_material(

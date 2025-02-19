@@ -42,7 +42,7 @@ def resolve_dimensional_values(dimensionValue: MAS.DimensionWithTolerance, prefe
         elif dimensionValue.maximum is not None:
             return dimensionValue.maximum
     else:
-        assert 0, "Unknown type of dimension, options are {MAXIMUM, NOMINAL, MINIMUM}"
+        raise AttributeError("Unknown type of dimension, options are {MAXIMUM, NOMINAL, MINIMUM}")
 
 
 def convert_units(units, scale):
@@ -62,7 +62,7 @@ def convert_axis(coordinates):
     elif len(coordinates) == 3:
         return [coordinates[2], coordinates[0], coordinates[1]]
     else:
-        assert False, "Invalid coordinates length"
+        raise AttributeError("Invalid coordinates length")
 
 
 def convert_axis_toroidal_core(coordinates):
@@ -71,7 +71,7 @@ def convert_axis_toroidal_core(coordinates):
     elif len(coordinates) == 3:
         return [-coordinates[1], coordinates[0], coordinates[2]]
     else:
-        assert False, "Invalid coordinates length"
+        raise AttributeError("Invalid coordinates length")
 
 
 def clean_name(name):
@@ -97,23 +97,6 @@ def get_closest_face(object3D, position=[0, 0, 0]):
             closest_face = face
 
     return closest_face
-
-
-def sweep_around_axis_with_offset_and_angle(project, object3D, axis, offset=[0, 0, 0], offset_rotation=0, offset_rotation_axis="Z", angle=360, number_of_segments=12):
-    object3D.rotate(offset_rotation_axis, -offset_rotation)
-    object3D.move([-offset[0], -offset[1], -offset[2]])
-    
-    project.modeler.sweep_around_axis(
-        assignment=object3D,
-        axis=axis,
-        sweep_angle=angle,
-        draft_angle=0,
-        number_of_segments=number_of_segments
-    )
-    object3D.move(offset)
-    assert 0
-
-    return object3D
 
 
 def cartesian_to_polar(value, radialHeight):
