@@ -285,7 +285,7 @@ class Ansyas:
 
         self.bobbin_builder.create_simple_bobbin(
             bobbin=magnetic.coil.bobbin,
-            material="Plastic",
+            material="Plastic" if self.solution_type == "SteadyState" else "PVC plastic",  # TODO: Create material from bobbin
         )
 
         turns_and_terminals = self.coil_builder.create_coil(

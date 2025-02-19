@@ -149,7 +149,7 @@ class Coil:
     def assign_turn_losses_as_heat_source(self, turns, windingLossesPerTurn):
         for turn_index, turn in enumerate(turns):
             windingLossesThisTurn = windingLossesPerTurn[turn_index]
-            turn_losses = windingLossesThisTurn['ohmicLosses']['losses'] + sum(windingLossesThisTurn['skinEffectLosses']['lossesPerHarmonic']) + sum(windingLossesThisTurn['proximityEffectLosses']['lossesPerHarmonic'])
+            turn_losses = windingLossesThisTurn.ohmicLosses.losses + sum(windingLossesThisTurn.skinEffectLosses.lossesPerHarmonic) + sum(windingLossesThisTurn.proximityEffectLosses.lossesPerHarmonic)
 
             self.project.assign_source(
                 assignment=[turn.name],

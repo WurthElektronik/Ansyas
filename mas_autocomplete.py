@@ -67,10 +67,11 @@ def autocomplete(mas):
             magnetic.coil.functionalDescription[winding_index].wire.strand = MAS.WireRound.from_dict(PyMKF.find_wire_by_name(winding.wire.strand))
 
     if isinstance(magnetic.core.functionalDescription.material, str):
-        magnetic.core.functionalDescription.material = magnetic.core.functionalDescription.material.replace(' ', '')
-        magnetic.core.functionalDescription.material = MAS.CoreMaterial.from_dict(PyMKF.find_core_material_by_name(magnetic.core.functionalDescription.material))
-    else:
-        magnetic.core.functionalDescription.material.name = magnetic.core.functionalDescription.material.name.replace(' ', '')
+        # magnetic.core.functionalDescription.material = magnetic.core.functionalDescription.material.replace(' ', '')
+        material_data = PyMKF.find_core_material_by_name(magnetic.core.functionalDescription.material)
+        magnetic.core.functionalDescription.material = MAS.CoreMaterial.from_dict(material_data)
+    # else:
+        # magnetic.core.functionalDescription.material.name = magnetic.core.functionalDescription.material.name.replace(' ', '')
 
     if magnetic.core.processedDescription is None:
         core_data = PyMKF.calculate_core_data(magnetic.core.to_dict(), False)
@@ -101,36 +102,49 @@ def autocomplete(mas):
     number_windings = len(magnetic.coil.functionalDescription)
     for operating_point_index in range(0, len(inputs.operatingPoints)):
         for excitation_index in range(0, len(inputs.operatingPoints[operating_point_index].excitationsPerWinding)):
-            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.waveform is None:
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.waveform = MAS.Waveform.from_dict(PyMKF.create_waveform(
-                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.processed.to_dict(),
+            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.waveform is None:
+                if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.processed is not None:
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.waveform = MAS.Waveform.from_dict(PyMKF.create_waveform(
+                        inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.processed.to_dict(),
+                        frequency
+                    ))
+                elif inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.harmonics is not None:
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current = MAS.SignalDescriptor.from_dict(PyMKF.calculate_signal_from_harmonics(
+                        inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.harmonics.to_dict(),
+                        frequency
+                    ))
+
+            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.harmonics is None:
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.harmonics = MAS.Harmonics.from_dict(PyMKF.calculate_harmonics(
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.waveform.to_dict(),
                     frequency
                 ))
-            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.harmonics is None:
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.harmonics = MAS.Harmonics.from_dict(PyMKF.calculate_harmonics(
-                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.waveform.to_dict(),
-                    frequency
-                ))
-            inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.processed = MAS.Processed.from_dict(PyMKF.calculate_processed(
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.harmonics.to_dict(),
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].current.waveform.to_dict(),
+            inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.processed = MAS.Processed.from_dict(PyMKF.calculate_processed(
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.harmonics.to_dict(),
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].current.waveform.to_dict(),
             ))
 
-            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.waveform is None:
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.waveform = MAS.Waveform.from_dict(PyMKF.create_waveform(
-                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.processed.to_dict(),
+            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.waveform is None:
+                if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.processed is not None:
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.waveform = MAS.Waveform.from_dict(PyMKF.create_waveform(
+                        inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.processed.to_dict(),
+                        frequency
+                    ))
+                elif inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.harmonics is not None:
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage = MAS.SignalDescriptor.from_dict(PyMKF.calculate_signal_from_harmonics(
+                        inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.harmonics.to_dict(),
+                        frequency
+                    ))
+
+            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.harmonics is None:
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.harmonics = MAS.Harmonics.from_dict(PyMKF.calculate_harmonics(
+                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.waveform.to_dict(),
                     frequency
                 ))
 
-            if inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.harmonics is None:
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.harmonics = MAS.Harmonics.from_dict(PyMKF.calculate_harmonics(
-                    inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.waveform.to_dict(),
-                    frequency
-                ))
-
-            inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.processed = MAS.Processed.from_dict(PyMKF.calculate_processed(
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.harmonics.to_dict(),
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].voltage.waveform.to_dict(),
+            inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.processed = MAS.Processed.from_dict(PyMKF.calculate_processed(
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.harmonics.to_dict(),
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].voltage.waveform.to_dict(),
             ))
 
             magnetizingInductance = PyMKF.calculate_inductance_from_number_turns_and_gapping(
@@ -140,8 +154,8 @@ def autocomplete(mas):
                 {},
             )
 
-            inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].magnetizingCurrent = MAS.SignalDescriptor.from_dict(PyMKF.calculate_induced_current(
-                inputs.operatingPoints[operating_point_index].excitationsPerWinding[operating_point_index].to_dict(),
+            inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].magnetizingCurrent = MAS.SignalDescriptor.from_dict(PyMKF.calculate_induced_current(
+                inputs.operatingPoints[operating_point_index].excitationsPerWinding[excitation_index].to_dict(),
                 magnetizingInductance)
             )
 
