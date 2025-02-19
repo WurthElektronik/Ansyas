@@ -602,7 +602,7 @@ class ToroidalCoil(Coil):
             turn_angle = 0
             if turn_data.additionalCoordinates is not None:
                 turn_angle = math.atan2(turn_data.coordinates[1], turn_data.coordinates[0])
-                internal_turn_angle = round(turn_angle - math.atan2(turn_data.additionalCoordinates[0][1] - turn_data.coordinates[1], turn_data.additionalCoordinates[0][0] - turn_data.coordinates[0]), 12)
+                internal_turn_angle = round(math.fabs(turn_angle - math.atan2(turn_data.additionalCoordinates[0][1] - turn_data.coordinates[1], turn_data.additionalCoordinates[0][0] - turn_data.coordinates[0])), 12)
 
             turn_data_raw = {
                 "wire": wire,
