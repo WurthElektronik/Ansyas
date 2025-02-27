@@ -54,16 +54,21 @@ class Excitation:
             terminals_per_parallel = {}
             for winding_index, winding_data in enumerate(coil.functionalDescription):
                 current_per_parallel = f"pwl_periodic(winding_{winding_index}_current, Time)"
+                voltage = f"pwl_periodic(winding_{winding_index}_voltage, Time)"
+                current_rms_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms / coil.functionalDescription[winding_index].numberParallels
+                voltage_rms = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms
 
                 parallel_per_winding[winding_data.name.title()] = []
                 for parallel_index in range(0, winding_data.numberParallels):
 
                     winding_this_parallel = self.create_winding(
-                        amplitude=current_per_parallel,
-                        winding_type="Current",
+                        amplitude=current_per_parallel if len(coil.functionalDescription) == 1 else voltage,
+                        winding_type="Current" if len(coil.functionalDescription) == 1 else "Voltage",
+                        resistance=0 if winding_index == 0 else voltage_rms / current_rms_per_parallel,
                         name=f"{winding_data.name.title()}_winding_parallel_{parallel_index}",
                         is_solid=coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz
                     )
+
                     terminals_per_parallel[winding_this_parallel.name] = []
                     parallel_per_winding[winding_data.name.title()].append(winding_this_parallel)
 
@@ -74,69 +79,71 @@ class Excitation:
                     coils=turns_and_terminals[turn_index][1]
                 )
 
-            name = os.path.dirname(__file__) + f"/outputs/temp_{time.time()}.aedt"
-            old_name = self.project.project_name
-            old_project_path = self.project.project_path
-            self.project.save_project(file_name=name)
+            if self.project.solution_type in ["TransientAPhiFormulation"]:
 
-            indexes = []
-            f = open(name, "r", encoding="latin-1")
-            for line in f:
-                if "CoilOrderList" in line:
-                    index = int(line.split(": ")[1].split("]")[0])
-                    indexes.append(index)
-            indexes.append(len(coil.turnsDescription))
-            current_coil_order_index = 1
+                name = os.path.dirname(__file__) + f"/outputs/temp_{time.time()}.aedt"
+                old_name = self.project.project_name
+                old_project_path = self.project.project_path
+                self.project.save_project(file_name=name)
 
-            f = open(name, "r", encoding="latin-1")
-            new_f = ""
-            for line in f:
-                if "CoilOrderList" in line:
-                    new_line = f"\t\t\t\t\tCoilOrderList[{indexes[current_coil_order_index] - indexes[current_coil_order_index - 1]}: "
-                    for x in range(indexes[current_coil_order_index - 1], indexes[current_coil_order_index]):
-                        if x == indexes[current_coil_order_index] - 1:
-                            new_line += f"{x}"
-                        else:
-                            new_line += f"{x}, "
-                    new_line += "]"
+                indexes = []
+                f = open(name, "r", encoding="latin-1")
+                for line in f:
+                    if "CoilOrderList" in line:
+                        index = int(line.split(": ")[1].split("]")[0])
+                        indexes.append(index)
+                indexes.append(len(coil.turnsDescription))
+                current_coil_order_index = 1
 
-                    new_f += new_line + "\n"
-                    current_coil_order_index += 1
-                else:
-                    new_f += line
+                f = open(name, "r", encoding="latin-1")
+                new_f = ""
+                for line in f:
+                    if "CoilOrderList" in line:
+                        new_line = f"\t\t\t\t\tCoilOrderList[{indexes[current_coil_order_index] - indexes[current_coil_order_index - 1]}: "
+                        for x in range(indexes[current_coil_order_index - 1], indexes[current_coil_order_index]):
+                            if x == indexes[current_coil_order_index] - 1:
+                                new_line += f"{x}"
+                            else:
+                                new_line += f"{x}, "
+                        new_line += "]"
 
-            f = open(name, "w", encoding="latin-1")
-            f.write(new_f)
-            f.close()
+                        new_f += new_line + "\n"
+                        current_coil_order_index += 1
+                    else:
+                        new_f += line
 
-            self.project.close_project(save=False)
-            self.project.load_project(
-                file_name=name,
-                close_active=True,
-                set_active=True,
-            )
+                f = open(name, "w", encoding="latin-1")
+                f.write(new_f)
+                f.close()
 
-            self.project.save_project(file_name = old_project_path + old_name + ".aedt")
-            self.project.close_project(name=name, save=False)
+                self.project.close_project(save=False)
+                self.project.load_project(
+                    file_name=name,
+                    close_active=True,
+                    set_active=True,
+                )
 
-            for winding_name, parallels_in_this_winding in parallel_per_winding.items():
-                if len(parallels_in_this_winding) == 1:
-                    parallels_in_this_winding[0].name = winding_name
+                self.project.save_project(file_name=old_project_path + old_name + ".aedt")
+                self.project.close_project(name=name, save=False)
 
-            all_parallel_excitations = []
-            for winding_name, parallels_in_this_winding in parallel_per_winding.items():
-                all_parallel_excitations.extend([x.name for x in parallels_in_this_winding])
-            matrix = self.create_matrix(all_parallel_excitations, "solution_matrix")
+                for winding_name, parallels_in_this_winding in parallel_per_winding.items():
+                    if len(parallels_in_this_winding) == 1:
+                        parallels_in_this_winding[0].name = winding_name
 
-            for winding_name, parallels_in_this_winding in parallel_per_winding.items():
-                if len(parallels_in_this_winding) > 1:
-                    matrix.join_parallel(
-                        sources=[x.name for x in parallels_in_this_winding],
-                        matrix_name="windings",
-                        join_name=winding_name
-                    )
-                else:
-                    parallels_in_this_winding[0].name = winding_name
+                all_parallel_excitations = []
+                for winding_name, parallels_in_this_winding in parallel_per_winding.items():
+                    all_parallel_excitations.extend([x.name for x in parallels_in_this_winding])
+                matrix = self.create_matrix(all_parallel_excitations, "solution_matrix")
+
+                for winding_name, parallels_in_this_winding in parallel_per_winding.items():
+                    if len(parallels_in_this_winding) > 1:
+                        matrix.join_parallel(
+                            sources=[x.name for x in parallels_in_this_winding],
+                            matrix_name="windings",
+                            join_name=winding_name
+                        )
+                    else:
+                        parallels_in_this_winding[0].name = winding_name
 
         elif self.project.solution_type == "EddyCurrent":
             if operating_point is not None:
@@ -144,6 +151,9 @@ class Excitation:
 
             for winding_index, winding_data in enumerate(coil.functionalDescription):
                 current_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms * math.sqrt(2) / coil.functionalDescription[winding_index].numberParallels
+                voltage = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms * math.sqrt(2)
+                current_rms_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms / coil.functionalDescription[winding_index].numberParallels
+                voltage_rms = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms
                 if winding_index == 0:
                     current_per_parallel += magnetizing_current_peak
                 else:
@@ -152,8 +162,9 @@ class Excitation:
                 parallel_per_winding[winding_data.name.title()] = []
                 for parallel_index in range(0, winding_data.numberParallels):
                     winding_this_parallel = self.create_winding(
-                        amplitude=current_per_parallel,
-                        winding_type="Current",
+                        amplitude=current_per_parallel if len(coil.functionalDescription) == 1 else voltage,
+                        winding_type="Current" if len(coil.functionalDescription) == 1 else "Voltage",
+                        resistance=0 if winding_index == 0 else voltage_rms / current_rms_per_parallel,
                         name=f"{winding_data.name.title()}_winding_parallel_{parallel_index}",
                         is_solid=coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz
                     )
@@ -187,7 +198,7 @@ class Excitation:
             current=amplitude,
             resistance=resistance,
             inductance=0,
-            voltage=0,
+            voltage=amplitude,
             parallel_branches=1,
             phase=0,
             name=name,
