@@ -32,8 +32,8 @@ if __name__ == "__main__":
         # specified_version="2023.2",
         non_graphical=non_graphical,
         # solution_type="SteadyState",
-        # solution_type="EddyCurrent",
-        solution_type="Transient",
+        solution_type="EddyCurrent",
+        # solution_type="Transient",
         # solution_type="TransientAPhiFormulation",
         # solution_type="Electrostatic",
         new_desktop_session=new_desktop_session
