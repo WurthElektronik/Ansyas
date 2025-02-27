@@ -29,12 +29,12 @@ class Ansyas:
         self.coil_builder = None
         self.outputs_extractor = None
         self.padding = {
-            "x_pos": 10,
-            "y_pos": 10,
-            "z_pos": 10,
-            "x_neg": 10,
-            "y_neg": 10,
-            "z_neg": 10,
+            "x_pos": 100,
+            "y_pos": 100,
+            "z_pos": 100,
+            "x_neg": 100,
+            "y_neg": 100,
+            "z_neg": 100,
         }
 
     def fit(self):
