@@ -54,7 +54,10 @@ class Excitation:
             terminals_per_parallel = {}
             for winding_index, winding_data in enumerate(coil.functionalDescription):
                 current_per_parallel = f"pwl_periodic(winding_{winding_index}_current, Time)"
-                voltage = f"pwl_periodic(winding_{winding_index}_voltage, Time)"
+                if winding_index == 0:
+                    voltage = f"pwl_periodic(winding_{winding_index}_voltage, Time)"
+                else:
+                    voltage = 0
                 current_rms_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms / coil.functionalDescription[winding_index].numberParallels
                 voltage_rms = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms
 
@@ -151,7 +154,10 @@ class Excitation:
 
             for winding_index, winding_data in enumerate(coil.functionalDescription):
                 current_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms * math.sqrt(2) / coil.functionalDescription[winding_index].numberParallels
-                voltage = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms * math.sqrt(2)
+                if winding_index == 0:
+                    voltage = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms * math.sqrt(2)
+                else:
+                    voltage = 0
                 current_rms_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms / coil.functionalDescription[winding_index].numberParallels
                 voltage_rms = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms
                 if winding_index == 0:
