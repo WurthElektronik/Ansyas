@@ -95,7 +95,7 @@ class Core:
             raise AttributeError(f"Material {material.name} is missing resistivity")
 
         for methodData in material.volumetricLosses["default"]:
-            if methodData.method == MAS.CoreLossesMethodType.lossFactor:
+            if methodData.method == MAS.VolumetricCoreLossesMethodType.lossFactor:
                 closest_temperature = math.inf
                 target_temperature = 25
                 initial_permeability = None
@@ -118,7 +118,7 @@ class Core:
                 aedt_material.magnetic_loss_tangent = f"pwl($material_{material.name}_lossFactor, Freq)"
                 break
 
-            if methodData.method == MAS.CoreLossesMethodType.steinmetz:
+            if methodData.method == MAS.VolumetricCoreLossesMethodType.steinmetz:
                 for steinmetz_range in methodData.ranges:
                     if steinmetz_range.minimumFrequency <= frequency <= steinmetz_range.maximumFrequency:
                         steinmetz_coefficients = steinmetz_range.to_dict()

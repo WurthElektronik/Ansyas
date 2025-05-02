@@ -360,7 +360,7 @@ class ConnectionType(Enum):
     Screw = "Screw"
 
 
-class Topology(Enum):
+class Topologies(Enum):
     """Topology that will use the magnetic"""
 
     ActiveClampForwardConverter = "Active Clamp Forward Converter"
@@ -432,7 +432,7 @@ class DesignRequirements:
     terminalType: Optional[List[ConnectionType]] = None
     """Type of the terminal that must be used, per winding"""
 
-    topology: Optional[Topology] = None
+    topology: Optional[Topologies] = None
     """Topology that will use the magnetic"""
 
     wiringTechnology: Optional[WiringTechnology] = None
@@ -454,7 +454,7 @@ class DesignRequirements:
         operatingTemperature = from_union([DimensionWithTolerance.from_dict, from_none], obj.get("operatingTemperature"))
         strayCapacitance = from_union([lambda x: from_list(DimensionWithTolerance.from_dict, x), from_none], obj.get("strayCapacitance"))
         terminalType = from_union([lambda x: from_list(ConnectionType, x), from_none], obj.get("terminalType"))
-        topology = from_union([Topology, from_none], obj.get("topology"))
+        topology = from_union([Topologies, from_none], obj.get("topology"))
         wiringTechnology = from_union([WiringTechnology, from_none], obj.get("wiringTechnology"))
         return DesignRequirements(magnetizingInductance, turnsRatios, insulation, isolationSides, leakageInductance, market, maximumDimensions, maximumWeight, minimumImpedance, name, operatingTemperature, strayCapacitance, terminalType, topology, wiringTechnology)
 
@@ -485,7 +485,7 @@ class DesignRequirements:
         if self.terminalType is not None:
             result["terminalType"] = from_union([lambda x: from_list(lambda x: to_enum(ConnectionType, x), x), from_none], self.terminalType)
         if self.topology is not None:
-            result["topology"] = from_union([lambda x: to_enum(Topology, x), from_none], self.topology)
+            result["topology"] = from_union([lambda x: to_enum(Topologies, x), from_none], self.topology)
         if self.wiringTechnology is not None:
             result["wiringTechnology"] = from_union([lambda x: to_enum(WiringTechnology, x), from_none], self.wiringTechnology)
         return result
@@ -645,11 +645,12 @@ class WaveformLabel(Enum):
     Custom = "Custom"
     FlybackPrimary = "Flyback Primary"
     FlybackSecondary = "Flyback Secondary"
-    FlybackSecondaryDCM = "FlybackSecondaryDCM"
     FlybackSecondaryWithDeadtime = "Flyback Secondary With Deadtime"
     Rectangular = "Rectangular"
     RectangularDCM = "RectangularDCM"
     RectangularWithDeadtime = "Rectangular With Deadtime"
+    SecondaryRectangular = "Secondary Rectangular"
+    SecondaryRectangularWithDeadtime = "Secondary Rectangular With Deadtime"
     Sinusoidal = "Sinusoidal"
     Triangular = "Triangular"
     UnipolarRectangular = "Unipolar Rectangular"
@@ -668,6 +669,9 @@ class Processed:
     """
     average: Optional[float] = None
     """The average value of the waveform, referred to 0"""
+
+    deadTime: Optional[float] = None
+    """The dead time after TOn and Toff, in seconds, if applicable"""
 
     dutyCycle: Optional[float] = None
     """The duty cycle of the waveform, if applicable"""
@@ -700,6 +704,7 @@ class Processed:
         offset = from_float(obj.get("offset"))
         acEffectiveFrequency = from_union([from_float, from_none], obj.get("acEffectiveFrequency"))
         average = from_union([from_float, from_none], obj.get("average"))
+        deadTime = from_union([from_float, from_none], obj.get("deadTime"))
         dutyCycle = from_union([from_float, from_none], obj.get("dutyCycle"))
         effectiveFrequency = from_union([from_float, from_none], obj.get("effectiveFrequency"))
         peak = from_union([from_float, from_none], obj.get("peak"))
@@ -707,7 +712,7 @@ class Processed:
         phase = from_union([from_float, from_none], obj.get("phase"))
         rms = from_union([from_float, from_none], obj.get("rms"))
         thd = from_union([from_float, from_none], obj.get("thd"))
-        return Processed(label, offset, acEffectiveFrequency, average, dutyCycle, effectiveFrequency, peak, peakToPeak, phase, rms, thd)
+        return Processed(label, offset, acEffectiveFrequency, average, deadTime, dutyCycle, effectiveFrequency, peak, peakToPeak, phase, rms, thd)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -717,6 +722,8 @@ class Processed:
             result["acEffectiveFrequency"] = from_union([to_float, from_none], self.acEffectiveFrequency)
         if self.average is not None:
             result["average"] = from_union([to_float, from_none], self.average)
+        if self.deadTime is not None:
+            result["deadTime"] = from_union([to_float, from_none], self.deadTime)
         if self.dutyCycle is not None:
             result["dutyCycle"] = from_union([to_float, from_none], self.dutyCycle)
         if self.effectiveFrequency is not None:
@@ -2521,6 +2528,64 @@ class SaturationElement:
         return result
 
 
+@dataclass
+class MassLossesPoint:
+    """List of mass losses points
+    
+    data for describing the mass losses at a given point of magnetic flux density, frequency
+    and temperature
+    """
+    magneticFluxDensity: OperatingPointExcitation
+    origin: str
+    """origin of the data"""
+
+    temperature: float
+    """temperature value, in Celsius"""
+
+    value: float
+    """mass losses value, in W/Kg"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'MassLossesPoint':
+        assert isinstance(obj, dict)
+        magneticFluxDensity = OperatingPointExcitation.from_dict(obj.get("magneticFluxDensity"))
+        origin = from_str(obj.get("origin"))
+        temperature = from_float(obj.get("temperature"))
+        value = from_float(obj.get("value"))
+        return MassLossesPoint(magneticFluxDensity, origin, temperature, value)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["magneticFluxDensity"] = to_class(OperatingPointExcitation, self.magneticFluxDensity)
+        result["origin"] = from_str(self.origin)
+        result["temperature"] = to_float(self.temperature)
+        result["value"] = to_float(self.value)
+        return result
+
+
+class MassCoreLossesMethodType(Enum):
+    magnetec = "magnetec"
+
+
+@dataclass
+class MagneticsCoreLossesMethodData:
+    """Magnetic method for estimating mass losses"""
+
+    method: MassCoreLossesMethodType
+    """Name of this method"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'MagneticsCoreLossesMethodData':
+        assert isinstance(obj, dict)
+        method = MassCoreLossesMethodType(obj.get("method"))
+        return MagneticsCoreLossesMethodData(method)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["method"] = to_enum(MassCoreLossesMethodType, self.method)
+        return result
+
+
 class MaterialEnum(Enum):
     """The composition of a magnetic material"""
 
@@ -2972,7 +3037,7 @@ class LossFactorPoint:
         return result
 
 
-class CoreLossesMethodType(Enum):
+class VolumetricCoreLossesMethodType(Enum):
     lossFactor = "lossFactor"
     magnetics = "magnetics"
     micrometals = "micrometals"
@@ -3049,7 +3114,7 @@ class CoreLossesMethodData:
     
     Loss factor method for estimating volumetric losses
     """
-    method: CoreLossesMethodType
+    method: VolumetricCoreLossesMethodType
     """Name of this method"""
 
     ranges: Optional[List[SteinmetzCoreLossesMethodRangeDatum]] = None
@@ -3069,7 +3134,7 @@ class CoreLossesMethodData:
     @staticmethod
     def from_dict(obj: Any) -> 'CoreLossesMethodData':
         assert isinstance(obj, dict)
-        method = CoreLossesMethodType(obj.get("method"))
+        method = VolumetricCoreLossesMethodType(obj.get("method"))
         ranges = from_union([lambda x: from_list(SteinmetzCoreLossesMethodRangeDatum.from_dict, x), from_none], obj.get("ranges"))
         coefficients = from_union([RoshenAdditionalCoefficients.from_dict, from_none], obj.get("coefficients"))
         referenceVolumetricLosses = from_union([lambda x: from_list(VolumetricLossesPoint.from_dict, x), from_none], obj.get("referenceVolumetricLosses"))
@@ -3082,7 +3147,7 @@ class CoreLossesMethodData:
 
     def to_dict(self) -> dict:
         result: dict = {}
-        result["method"] = to_enum(CoreLossesMethodType, self.method)
+        result["method"] = to_enum(VolumetricCoreLossesMethodType, self.method)
         if self.ranges is not None:
             result["ranges"] = from_union([lambda x: from_list(lambda x: to_class(SteinmetzCoreLossesMethodRangeDatum, x), x), from_none], self.ranges)
         if self.coefficients is not None:
@@ -3151,6 +3216,9 @@ class CoreMaterial:
     heatConductivity: Optional[DimensionWithTolerance] = None
     """Heat conductivity value according to manufacturer, in W/m/K"""
 
+    massLosses: Optional[Dict[str, List[Union[MagneticsCoreLossesMethodData, List[MassLossesPoint]]]]] = None
+    """The data regarding the mass losses of a magnetic material"""
+
     materialComposition: Optional[MaterialComposition] = None
     """The composition of a magnetic material"""
 
@@ -3176,9 +3244,10 @@ class CoreMaterial:
         family = from_union([from_str, from_none], obj.get("family"))
         heatCapacity = from_union([DimensionWithTolerance.from_dict, from_none], obj.get("heatCapacity"))
         heatConductivity = from_union([DimensionWithTolerance.from_dict, from_none], obj.get("heatConductivity"))
+        massLosses = from_union([lambda x: from_dict(lambda x: from_list(lambda x: from_union([MagneticsCoreLossesMethodData.from_dict, lambda x: from_list(MassLossesPoint.from_dict, x)], x), x), x), from_none], obj.get("massLosses"))
         materialComposition = from_union([MaterialComposition, from_none], obj.get("materialComposition"))
         remanence = from_union([lambda x: from_list(SaturationElement.from_dict, x), from_none], obj.get("remanence"))
-        return CoreMaterial(manufacturerInfo, material, name, permeability, resistivity, saturation, type, volumetricLosses, bhCycle, coerciveForce, commercialName, curieTemperature, density, family, heatCapacity, heatConductivity, materialComposition, remanence)
+        return CoreMaterial(manufacturerInfo, material, name, permeability, resistivity, saturation, type, volumetricLosses, bhCycle, coerciveForce, commercialName, curieTemperature, density, family, heatCapacity, heatConductivity, massLosses, materialComposition, remanence)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -3206,6 +3275,8 @@ class CoreMaterial:
             result["heatCapacity"] = from_union([lambda x: to_class(DimensionWithTolerance, x), from_none], self.heatCapacity)
         if self.heatConductivity is not None:
             result["heatConductivity"] = from_union([lambda x: to_class(DimensionWithTolerance, x), from_none], self.heatConductivity)
+        if self.massLosses is not None:
+            result["massLosses"] = from_union([lambda x: from_dict(lambda x: from_list(lambda x: from_union([lambda x: to_class(MagneticsCoreLossesMethodData, x), lambda x: from_list(lambda x: to_class(MassLossesPoint, x), x)], x), x), x), from_none], self.massLosses)
         if self.materialComposition is not None:
             result["materialComposition"] = from_union([lambda x: to_enum(MaterialComposition, x), from_none], self.materialComposition)
         if self.remanence is not None:
@@ -3833,6 +3904,9 @@ class CoreLossesOutput:
     magneticFluxDensity: Optional[SignalDescriptor] = None
     """Excitation of the B field that produced the core losses"""
 
+    massLosses: Optional[float] = None
+    """Mass value of the core losses"""
+
     temperature: Optional[float] = None
     """temperature in the core that produced the core losses"""
 
@@ -3848,9 +3922,10 @@ class CoreLossesOutput:
         eddyCurrentCoreLosses = from_union([from_float, from_none], obj.get("eddyCurrentCoreLosses"))
         hysteresisCoreLosses = from_union([from_float, from_none], obj.get("hysteresisCoreLosses"))
         magneticFluxDensity = from_union([SignalDescriptor.from_dict, from_none], obj.get("magneticFluxDensity"))
+        massLosses = from_union([from_float, from_none], obj.get("massLosses"))
         temperature = from_union([from_float, from_none], obj.get("temperature"))
         volumetricLosses = from_union([from_float, from_none], obj.get("volumetricLosses"))
-        return CoreLossesOutput(coreLosses, methodUsed, origin, eddyCurrentCoreLosses, hysteresisCoreLosses, magneticFluxDensity, temperature, volumetricLosses)
+        return CoreLossesOutput(coreLosses, methodUsed, origin, eddyCurrentCoreLosses, hysteresisCoreLosses, magneticFluxDensity, massLosses, temperature, volumetricLosses)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -3863,6 +3938,8 @@ class CoreLossesOutput:
             result["hysteresisCoreLosses"] = from_union([to_float, from_none], self.hysteresisCoreLosses)
         if self.magneticFluxDensity is not None:
             result["magneticFluxDensity"] = from_union([lambda x: to_class(SignalDescriptor, x), from_none], self.magneticFluxDensity)
+        if self.massLosses is not None:
+            result["massLosses"] = from_union([to_float, from_none], self.massLosses)
         if self.temperature is not None:
             result["temperature"] = from_union([to_float, from_none], self.temperature)
         if self.volumetricLosses is not None:
