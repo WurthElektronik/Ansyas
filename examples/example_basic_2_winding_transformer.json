@@ -9,7 +9,7 @@
             },
             "name": "My Design Requirements",
             "turnsRatios": [
-                {"nominal": 1}
+                {"nominal": 12}
             ]
         },
         "operatingPoints": [
@@ -44,30 +44,76 @@
     },
     "magnetic": {
         "coil": {
-            "bobbin": "Basic",
+            "windingOrientation": "contiguous",
+            "interleavingLevel": 6,
+            "bobbin": "None",
             "functionalDescription":[
                 {
                     "name": "Primary",
-                    "numberTurns": 4,
+                    "numberTurns": 12,
                     "numberParallels": 1,
                     "isolationSide": "primary",
-                    "wire": "Round 1.00 - Grade 1"
+                    "wire": {
+                        "coating": {
+                            "breakdownVoltage": 1000,
+                            "grade": 2,
+                            "type": "bare"
+                        },
+                        "conductingHeight": {
+                            "nominal": 0.00025
+                        },
+                        "conductingWidth": {
+                            "nominal": 0.01
+                        },
+                        "material": "copper",
+                        "numberConductors": 1,
+                        "outerHeight": {
+                            "nominal": 0.00025
+                        },
+                        "outerWidth": {
+                            "nominal": 0.01
+                        },
+                        "standard": "IEC 60317",
+                        "type": "rectangular"
+                    }
                 },
                 {
                     "name": "Secondary",
-                    "numberTurns": 4,
-                    "numberParallels": 1,
+                    "numberTurns": 1,
+                    "numberParallels": 12,
                     "isolationSide": "secondary",
-                    "wire": "Round 1.00 - Grade 1"
+                    "wire": {
+                        "coating": {
+                            "breakdownVoltage": 1000,
+                            "grade": 2,
+                            "type": "enamelled"
+                        },
+                        "conductingHeight": {
+                            "nominal": 0.00025
+                        },
+                        "conductingWidth": {
+                            "nominal": 0.01
+                        },
+                        "material": "copper",
+                        "numberConductors": 1,
+                        "outerHeight": {
+                            "nominal": 0.00025
+                        },
+                        "outerWidth": {
+                            "nominal": 0.01
+                        },
+                        "standard": "IEC 60317",
+                        "type": "rectangular"
+                    }
                 }
             ]
         },
         "core": {
-            "name": "core_E_19_8_5_N87_substractive",
+            "name": "blabla",
             "functionalDescription": {
                 "type": "two-piece set",
-                "material": "N87",
-                "shape": "PQ 32/20",
+                "material": "3C95",
+                "shape": "PQ 50/50",
                 "gapping": [{
                     "type": "residual",
                     "length": 0.000005
