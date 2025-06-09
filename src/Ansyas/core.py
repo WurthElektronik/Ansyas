@@ -144,9 +144,9 @@ class Core:
         )
 
         if step_path is None and core is not None:
-            step_path, obj_path = ShapeBuilder().get_core(project_name=f"core_{core.name}",
-                                                          geometrical_description=[x.to_dict() for x in core.geometricalDescription],
-                                                          output_path=os.path.abspath(os.path.dirname(__file__) + "/outputs/"))
+            step_path, obj_path = ShapeBuilder("CadQuery").get_core(project_name=f"core_{core.name}",
+                                                                    geometrical_description=[x.to_dict() for x in core.geometricalDescription],
+                                                                    output_path=os.path.abspath(os.path.dirname(__file__) + "/outputs/"))
 
         self.project.modeler.import_3d_cad(
             input_file=step_path.replace("/", os.sep),
