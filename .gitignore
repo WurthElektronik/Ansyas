@@ -1,3 +1,10 @@
 build/
 dist/
 venv/
+__pycache__
+*/outputs/*
+wheelhouse/
+*.log
+*.step
+*.stp
+*.stl

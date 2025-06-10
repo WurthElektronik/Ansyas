@@ -8,6 +8,7 @@ import excitation
 import ansyas_utils
 import bobbin as bobbin_builder
 import core as core_builder
+import cooling as cooling_builder
 import coil as coil_builder
 import excitation as excitation_builder
 import outputs
@@ -26,6 +27,7 @@ class Ansyas:
         self.scale = scale
         self.bobbin_builder = None
         self.core_builder = None
+        self.cooling_builder = None
         self.coil_builder = None
         self.outputs_extractor = None
         self.padding = {
@@ -115,7 +117,7 @@ class Ansyas:
         project_name = f"{project_name}.aedt"
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), outputs_folder)
 
-        shutil.rmtree(self.project_path, ignore_errors=True)
+        # shutil.rmtree(self.project_path, ignore_errors=True)
         os.makedirs(self.project_path, exist_ok=True)
         # self.project_name = os.path.join(self.project_path, project_name)
         self.solution_type = solution_type
@@ -197,6 +199,9 @@ class Ansyas:
 
     def create_builders(self, magnetic: MAS.Magnetic):
         self.core_builder = core_builder.Core(
+            project=self.project, 
+        )
+        self.cooling_builder = cooling_builder.Cooling(
             project=self.project, 
         )
         self.bobbin_builder = bobbin_builder.Bobbin(
@@ -324,7 +329,7 @@ class Ansyas:
             # name=None
         )
 
-    def create_magnetic_simulation(self, mas: [MAS.Mas, dict], simulate=False):
+    def create_magnetic_simulation(self, mas: [MAS.Mas, dict], simulate=False, operating_point_index=0):
         """Create an automatic simulation form the mas file.
 
         Parameters
@@ -375,16 +380,17 @@ class Ansyas:
 
         core_parts = self.core_builder.import_core(
             core=magnetic.core,
-            operating_point=inputs.operatingPoints[0],
+            operating_point=inputs.operatingPoints[operating_point_index],
         )
 
         if self.solution_type in "SteadyState":
-            core_losses = outputs[0].coreLosses.coreLosses
+            core_losses = outputs[operating_point_index].coreLosses.coreLosses
             self.core_builder.assign_core_losses_as_heat_source(core_parts, core_losses)
+            self.cooling_builder.create_cooling(magnetic.core, inputs.operatingPoints[operating_point_index].conditions.cooling)
 
         self.fit()
 
-        self.bobbin_builder.create_simple_bobbin(
+        bobbin = self.bobbin_builder.create_simple_bobbin(
             bobbin=magnetic.coil.bobbin,
             material="Plastic" if self.solution_type == "SteadyState" else "PVC plastic",  # TODO: Create material from bobbin
         )
@@ -393,7 +399,17 @@ class Ansyas:
             coil=magnetic.coil,
         )
 
-        winding_losses = outputs[0].windingLosses.windingLossesPerTurn
+        for core_part in core_parts:
+            if bobbin is not None:
+                bobbin.subtract(core_part, True)
+            for aux in turns_and_terminals:
+                if isinstance(aux, tuple):
+                    [turn, terminal] = aux
+                else:
+                    turn = aux
+                turn.subtract(core_part, True)
+
+        winding_losses = outputs[operating_point_index].windingLosses.windingLossesPerTurn
 
         if self.solution_type in "SteadyState":
             self.coil_builder.assign_turn_losses_as_heat_source(turns_and_terminals, winding_losses)
@@ -402,15 +418,15 @@ class Ansyas:
             self.excitation_builder.add_excitation(
                 coil=magnetic.coil,
                 turns_and_terminals=turns_and_terminals,
-                operating_point=inputs.operatingPoints[0],
+                operating_point=inputs.operatingPoints[operating_point_index],
             )
 
         if self.solution_type in "SteadyState":
-            self.create_boundary_conditions(inputs.operatingPoints[0].conditions)
+            self.create_boundary_conditions(inputs.operatingPoints[operating_point_index].conditions)
         else:
             self.create_boundary_region(self.padding)
 
-        self.create_setup(inputs.operatingPoints[0].excitationsPerWinding[0].frequency)
+        self.create_setup(inputs.operatingPoints[operating_point_index].excitationsPerWinding[0].frequency)
         if self.solution_type in "SteadyState":
             self.project.globalMeshSettings(
                 meshtype=1

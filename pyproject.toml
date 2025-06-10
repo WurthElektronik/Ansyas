@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "Ansyas"
+version = "0.9.2"
+description = 'Ansyas automates the 3D simulation in Ansys Maxwell and Icepak of any magnetic component described in MAS language.'
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = []
+authors = [
+  { name="Alfonso Martinez", email="Alfonso.Martinez@we-online.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "cadquery",
+  "pyaedt",
+  "OpenMagneticsVirtualBuilder",
+  "numpy",
+  "PyMKF==0.9.29",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/Ansyas"]
+
+[project.urls]
+Homepage = "https://we-online.com"
+Repository = "https://github.com/WurthElektronik/Ansyas"
+Contact = "https://www.linkedin.com/in/alfonso-martinez-de-la-torre/"
