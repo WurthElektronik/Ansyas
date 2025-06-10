@@ -67,7 +67,7 @@ class Excitation:
                     winding_this_parallel = self.create_winding(
                         amplitude=current_per_parallel if len(coil.functionalDescription) == 1 else voltage,
                         winding_type="Current" if len(coil.functionalDescription) == 1 else "Voltage",
-                        resistance=0 if winding_index == 0 else voltage_rms / current_rms_per_parallel,
+                        resistance=0 if winding_index == 0 and coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz else voltage_rms / current_rms_per_parallel,
                         name=f"{winding_data.name.title()}_winding_parallel_{parallel_index}",
                         is_solid=coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz
                     )
@@ -170,7 +170,7 @@ class Excitation:
                     winding_this_parallel = self.create_winding(
                         amplitude=current_per_parallel if len(coil.functionalDescription) == 1 else voltage,
                         winding_type="Current" if len(coil.functionalDescription) == 1 else "Voltage",
-                        resistance=0 if winding_index == 0 else voltage_rms / current_rms_per_parallel,
+                        resistance=0 if winding_index == 0 and coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz else voltage_rms / current_rms_per_parallel,
                         name=f"{winding_data.name.title()}_winding_parallel_{parallel_index}",
                         is_solid=coil.functionalDescription[winding_index].wire.type != MAS.WireType.litz
                     )

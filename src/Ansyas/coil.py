@@ -48,6 +48,10 @@ class Coil:
 
         conducting_section_names = self.project.modeler.get_objects_w_string(f"{turn_object.name}_Section")
         if len(conducting_section_names) != 1:
+            conducting_section_names = self.project.modeler.get_objects_w_string(f"{turn_object.name}_Section1")
+        if len(conducting_section_names) != 1:
+            conducting_section_names = self.project.modeler.get_objects_w_string(f"{turn_object.name}_Section2")
+        if len(conducting_section_names) != 1:
             raise AttributeError("Conducting section not found")
 
         conducting_section = self.project.modeler.get_object_from_name(conducting_section_names[0])

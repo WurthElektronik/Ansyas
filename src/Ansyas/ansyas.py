@@ -402,12 +402,19 @@ class Ansyas:
         for core_part in core_parts:
             if bobbin is not None:
                 bobbin.subtract(core_part, True)
+                for aux in turns_and_terminals:
+                    if isinstance(aux, tuple):
+                        [turn, terminal] = aux
+                    else:
+                        turn = aux
+                    bobbin.subtract(turn, True)
+
             for aux in turns_and_terminals:
                 if isinstance(aux, tuple):
                     [turn, terminal] = aux
                 else:
                     turn = aux
-                turn.subtract(core_part, True)
+                core_part.subtract(turn, True)
 
         winding_losses = outputs[operating_point_index].windingLosses.windingLossesPerTurn
 
