@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 3:
         solution_type = str(sys.argv[3])
-        assert solution_type in ["SteadyState", "EddyCurrent", "Transient", "TransientAPhiFormulation"], "solution type must be one of SteadyState, EddyCurrent, Transient, TransientAPhiFormulation"
+        assert solution_type in ["SteadyState", "EddyCurrent", "AC Magnetic", "Transient", "TransientAPhiFormulation"], "solution type must be one of SteadyState, EddyCurrent, AC Magnetic, Transient, TransientAPhiFormulation"
     else:
         solution_type = "EddyCurrent"
 

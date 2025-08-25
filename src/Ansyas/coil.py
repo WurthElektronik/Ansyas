@@ -227,7 +227,7 @@ class ConcentricCoil(Coil):
                 prev_turn = turn
                 prev_turn_insulation = turn_insulation
 
-            if self.project.solution_type == "EddyCurrent" or self.project.solution_type == "Transient" or self.project.solution_type == "TransientAPhiFormulation":
+            if self.project.solution_type in ["EddyCurrent", "AC Magnetic", "Transient", "TransientAPhiFormulation"]:
                 turn_terminal = self.add_coil_terminals_to_turn(
                     turn_object=turn, 
                     is_input=True, 
@@ -648,7 +648,7 @@ class ToroidalCoil(Coil):
                 prev_turn = turn
                 prev_turn_insulation = turn_insulation
 
-            if self.project.solution_type == "EddyCurrent" or self.project.solution_type == "Transient" or self.project.solution_type == "TransientAPhiFormulation":
+            if self.project.solution_type in ["EddyCurrent", "AC Magnetic", "Transient", "TransientAPhiFormulation"]:
                 turn_terminal = self.add_coil_terminals_to_turn(
                     turn_object=turn, 
                     is_input=True, 

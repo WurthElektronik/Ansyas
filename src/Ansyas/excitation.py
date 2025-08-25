@@ -148,7 +148,7 @@ class Excitation:
                     else:
                         parallels_in_this_winding[0].name = winding_name
 
-        elif self.project.solution_type == "EddyCurrent":
+        elif self.project.solution_type in ["EddyCurrent", "AC Magnetic"]:
             if operating_point is not None:
                 magnetizing_current_peak = operating_point.excitationsPerWinding[0].magnetizingCurrent.processed.rms * math.sqrt(2)
 
@@ -196,6 +196,8 @@ class Excitation:
                     )
                 else:
                     parallels_in_this_winding[0].name = winding_name
+        else:
+            raise NotImplementedError(f"{self.project.solution_type} not implemented")
 
     def create_winding(self, amplitude=0, winding_type="current", name="Winding", is_solid=True, resistance=0):
         winding = self.project.assign_winding(

@@ -175,7 +175,7 @@ class Core:
                 else:
                     core_part.name = f"{name}_{core_part_index}"
 
-        if self.project.solution_type in ["EddyCurrent", "Transient"]:
+        if self.project.solution_type in ["EddyCurrent", "AC Magnetic", "Transient"]:
             self.project.set_core_losses(
                 assignment=[x.name for x in core_parts],
                 core_loss_on_field=True

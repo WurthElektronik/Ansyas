@@ -290,7 +290,7 @@ class Ansyas:
         if self.project.solution_type == "Transient" or self.project.solution_type == "TransientAPhiFormulation":
             setup.props["StopTime"] = f"{2 / frequency}s"
             setup.props["TimeStep"] = f"{2 / frequency / 10}s"
-        elif self.project.solution_type == "EddyCurrent":
+        elif self.project.solution_type in ["EddyCurrent", "AC Magnetic"]:
 
             setup.props["Frequency"] = f"{frequency * 3}"
             setup.props["PercentRefinement"] = self.refinement_percent
@@ -421,7 +421,7 @@ class Ansyas:
         if self.solution_type in "SteadyState":
             self.coil_builder.assign_turn_losses_as_heat_source(turns_and_terminals, winding_losses)
 
-        if self.solution_type in ["EddyCurrent", "Transient", "TransientAPhiFormulation"]:
+        if self.solution_type in ["EddyCurrent", "AC Magnetic", "Transient", "TransientAPhiFormulation"]:
             self.excitation_builder.add_excitation(
                 coil=magnetic.coil,
                 turns_and_terminals=turns_and_terminals,
