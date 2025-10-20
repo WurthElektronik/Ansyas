@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "Ansyas"
-version = "0.9.4"
+version = "0.9.10"
 description = 'Ansyas automates the 3D simulation in Ansys Maxwell and Icepak of any magnetic component described in MAS language.'
 readme = "README.md"
 requires-python = ">=3.8"
@@ -29,7 +29,7 @@ dependencies = [
   "pyaedt",
   "OpenMagneticsVirtualBuilder",
   "numpy",
-  "PyMKF==0.9.29",
+  "PyMKF",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -45,6 +45,9 @@ class Ansyas:
     def analyze(self):
         self.project.analyze()
 
+    def save(self):
+        self.project.save_project()
+
     def set_units(self, units):
         """Sets the units of the modeler.
 
@@ -300,11 +303,20 @@ class Ansyas:
 
             setup.add_eddy_current_sweep(
                 sweep_type="LinearStep",
-                start_frequency=frequency,
-                stop_frequency=frequency * 4,
-                step_size=frequency * 2,
+                start_frequency=1,
+                stop_frequency=100000,
+                step_size=10000,
                 units="Hz",
-                clear=True,
+                clear=False,
+                save_all_fields=True
+            )
+            setup.add_eddy_current_sweep(
+                sweep_type="LinearStep",
+                start_frequency=100000,
+                stop_frequency=1000000,
+                step_size=100000,
+                units="Hz",
+                clear=False,
                 save_all_fields=True
             )
 

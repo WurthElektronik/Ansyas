@@ -68,7 +68,21 @@ def from_dict(f: Callable[[Any], T], x: Any) -> Dict[str, T]:
 
 @dataclass
 class DimensionWithTolerance:
-    """Required values for the altitude
+    """The input voltage of the boost
+    
+    The input voltage of the buck
+    
+    The input voltage of the flyback
+    
+    The input voltage of the forward
+    
+    The input voltage of the isolatedBuck
+    
+    The input voltage of the isolatedBuckBoost
+    
+    The input voltage of the pushPull
+    
+    Required values for the altitude
     
     Voltage RMS of the main supply to which this transformer is connected to.
     
@@ -98,6 +112,8 @@ class DimensionWithTolerance:
     Heat capacity value according to manufacturer, in J/Kg/K
     
     Heat conductivity value according to manufacturer, in W/m/K
+    
+    Leakage Inductance of the magnetic according to manufacturer
     
     Data a two dimensional matrix, created as an array of array, where the first coordinate
     in the X and the second the Y
@@ -149,6 +165,753 @@ class DimensionWithTolerance:
         return result
 
 
+@dataclass
+class BoostOperatingPoint:
+    """The description of one boost operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrent: float
+    """Output current"""
+
+    outputVoltage: float
+    """Output voltage"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'BoostOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrent = from_float(obj.get("outputCurrent"))
+        outputVoltage = from_float(obj.get("outputVoltage"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return BoostOperatingPoint(ambientTemperature, outputCurrent, outputVoltage, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrent"] = to_float(self.outputCurrent)
+        result["outputVoltage"] = to_float(self.outputVoltage)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class Boost:
+    """The description of a Boost converter excitation"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the boost"""
+
+    operatingPoints: List[BoostOperatingPoint]
+    """A list of operating points"""
+
+    currentRippleRatio: Optional[float] = None
+    """The maximum current ripple allowed in the output"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'Boost':
+        assert isinstance(obj, dict)
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(BoostOperatingPoint.from_dict, obj.get("operatingPoints"))
+        currentRippleRatio = from_union([from_float, from_none], obj.get("currentRippleRatio"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return Boost(diodeVoltageDrop, inputVoltage, operatingPoints, currentRippleRatio, efficiency, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(BoostOperatingPoint, x), self.operatingPoints)
+        if self.currentRippleRatio is not None:
+            result["currentRippleRatio"] = from_union([to_float, from_none], self.currentRippleRatio)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+@dataclass
+class BuckOperatingPoint:
+    """The description of one buck operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrent: float
+    """Output current"""
+
+    outputVoltage: float
+    """Output voltage"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'BuckOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrent = from_float(obj.get("outputCurrent"))
+        outputVoltage = from_float(obj.get("outputVoltage"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return BuckOperatingPoint(ambientTemperature, outputCurrent, outputVoltage, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrent"] = to_float(self.outputCurrent)
+        result["outputVoltage"] = to_float(self.outputVoltage)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class Buck:
+    """The description of a Buck converter excitation"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the buck"""
+
+    operatingPoints: List[BuckOperatingPoint]
+    """A list of operating points"""
+
+    currentRippleRatio: Optional[float] = None
+    """The maximum current ripple allowed in the output"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'Buck':
+        assert isinstance(obj, dict)
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(BuckOperatingPoint.from_dict, obj.get("operatingPoints"))
+        currentRippleRatio = from_union([from_float, from_none], obj.get("currentRippleRatio"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return Buck(diodeVoltageDrop, inputVoltage, operatingPoints, currentRippleRatio, efficiency, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(BuckOperatingPoint, x), self.operatingPoints)
+        if self.currentRippleRatio is not None:
+            result["currentRippleRatio"] = from_union([to_float, from_none], self.currentRippleRatio)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+class WaveformLabel(Enum):
+    """Waveform of the signal to measure
+    
+    Label of the waveform, if applicable. Used for common waveforms
+    """
+    BipolarRectangular = "Bipolar Rectangular"
+    BipolarTriangular = "Bipolar Triangular"
+    Custom = "Custom"
+    FlybackPrimary = "Flyback Primary"
+    FlybackSecondary = "Flyback Secondary"
+    FlybackSecondaryWithDeadtime = "Flyback Secondary With Deadtime"
+    Rectangular = "Rectangular"
+    RectangularDCM = "RectangularDCM"
+    RectangularWithDeadtime = "Rectangular With Deadtime"
+    SecondaryRectangular = "Secondary Rectangular"
+    SecondaryRectangularWithDeadtime = "Secondary Rectangular With Deadtime"
+    Sinusoidal = "Sinusoidal"
+    Triangular = "Triangular"
+    TriangularWithDeadtime = "Triangular With Deadtime"
+    UnipolarRectangular = "Unipolar Rectangular"
+    UnipolarTriangular = "Unipolar Triangular"
+
+
+@dataclass
+class CurrentTransformer:
+    """The description of a Current Transformer excitation"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    burdenResistor: float
+    """The value of the burden resistor in the measuring circuit"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    frequency: float
+    """Frequency of the input"""
+
+    maximumDutyCycle: float
+    """The maximum duty cycle in the input"""
+
+    maximumPrimaryCurrentPeak: float
+    """The maximum current peak in the input"""
+
+    waveformLabel: WaveformLabel
+    """Waveform of the signal to measure"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'CurrentTransformer':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        burdenResistor = from_float(obj.get("burdenResistor"))
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        frequency = from_float(obj.get("frequency"))
+        maximumDutyCycle = from_float(obj.get("maximumDutyCycle"))
+        maximumPrimaryCurrentPeak = from_float(obj.get("maximumPrimaryCurrentPeak"))
+        waveformLabel = WaveformLabel(obj.get("waveformLabel"))
+        return CurrentTransformer(ambientTemperature, burdenResistor, diodeVoltageDrop, frequency, maximumDutyCycle, maximumPrimaryCurrentPeak, waveformLabel)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["burdenResistor"] = to_float(self.burdenResistor)
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["frequency"] = to_float(self.frequency)
+        result["maximumDutyCycle"] = to_float(self.maximumDutyCycle)
+        result["maximumPrimaryCurrentPeak"] = to_float(self.maximumPrimaryCurrentPeak)
+        result["waveformLabel"] = to_enum(WaveformLabel, self.waveformLabel)
+        return result
+
+
+class FlybackModes(Enum):
+    """The mode of the operating point
+    
+    The conduction mode of the Flyback
+    """
+    BoundaryModeOperation = "Boundary Mode Operation"
+    ContinuousConductionMode = "Continuous Conduction Mode"
+    DiscontinuousConductionMode = "Discontinuous Conduction Mode"
+    QuasiResonantMode = "Quasi Resonant Mode"
+
+
+@dataclass
+class FlybackOperatingPoint:
+    """The descriptionof one flyback operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrents: List[float]
+    """A list of output currents, one per output"""
+
+    outputVoltages: List[float]
+    """A list of output voltages, one per output"""
+
+    mode: Optional[FlybackModes] = None
+    """The mode of the operating point"""
+
+    switchingFrequency: Optional[float] = None
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'FlybackOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrents = from_list(from_float, obj.get("outputCurrents"))
+        outputVoltages = from_list(from_float, obj.get("outputVoltages"))
+        mode = from_union([FlybackModes, from_none], obj.get("mode"))
+        switchingFrequency = from_union([from_float, from_none], obj.get("switchingFrequency"))
+        return FlybackOperatingPoint(ambientTemperature, outputCurrents, outputVoltages, mode, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrents"] = from_list(to_float, self.outputCurrents)
+        result["outputVoltages"] = from_list(to_float, self.outputVoltages)
+        if self.mode is not None:
+            result["mode"] = from_union([lambda x: to_enum(FlybackModes, x), from_none], self.mode)
+        if self.switchingFrequency is not None:
+            result["switchingFrequency"] = from_union([to_float, from_none], self.switchingFrequency)
+        return result
+
+
+@dataclass
+class Flyback:
+    """The description of a Flyback converter excitation"""
+
+    currentRippleRatio: float
+    """The maximum current ripple allowed in the output"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    efficiency: float
+    """The target efficiency"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the flyback"""
+
+    operatingPoints: List[FlybackOperatingPoint]
+    """A list of operating points"""
+
+    maximumDrainSourceVoltage: Optional[float] = None
+    """The maximum drain-source voltage in the selected switch"""
+
+    maximumDutyCycle: Optional[float] = None
+    """The maximum duty cycle in the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'Flyback':
+        assert isinstance(obj, dict)
+        currentRippleRatio = from_float(obj.get("currentRippleRatio"))
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        efficiency = from_float(obj.get("efficiency"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(FlybackOperatingPoint.from_dict, obj.get("operatingPoints"))
+        maximumDrainSourceVoltage = from_union([from_float, from_none], obj.get("maximumDrainSourceVoltage"))
+        maximumDutyCycle = from_union([from_float, from_none], obj.get("maximumDutyCycle"))
+        return Flyback(currentRippleRatio, diodeVoltageDrop, efficiency, inputVoltage, operatingPoints, maximumDrainSourceVoltage, maximumDutyCycle)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["currentRippleRatio"] = to_float(self.currentRippleRatio)
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["efficiency"] = to_float(self.efficiency)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(FlybackOperatingPoint, x), self.operatingPoints)
+        if self.maximumDrainSourceVoltage is not None:
+            result["maximumDrainSourceVoltage"] = from_union([to_float, from_none], self.maximumDrainSourceVoltage)
+        if self.maximumDutyCycle is not None:
+            result["maximumDutyCycle"] = from_union([to_float, from_none], self.maximumDutyCycle)
+        return result
+
+
+@dataclass
+class ForwardOperatingPoint:
+    """The description of one forward operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrents: List[float]
+    """A list of output currents, one per output"""
+
+    outputVoltages: List[float]
+    """A list of output voltages, one per output"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'ForwardOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrents = from_list(from_float, obj.get("outputCurrents"))
+        outputVoltages = from_list(from_float, obj.get("outputVoltages"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return ForwardOperatingPoint(ambientTemperature, outputCurrents, outputVoltages, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrents"] = from_list(to_float, self.outputCurrents)
+        result["outputVoltages"] = from_list(to_float, self.outputVoltages)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class Forward:
+    """The description of a Forward converter excitation"""
+
+    currentRippleRatio: float
+    """The maximum current ripple allowed in the output"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the forward"""
+
+    operatingPoints: List[ForwardOperatingPoint]
+    """A list of operating points"""
+
+    dutyCycle: Optional[float] = None
+    """Duty cycle for the converter, maximum 50%"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'Forward':
+        assert isinstance(obj, dict)
+        currentRippleRatio = from_float(obj.get("currentRippleRatio"))
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(ForwardOperatingPoint.from_dict, obj.get("operatingPoints"))
+        dutyCycle = from_union([from_float, from_none], obj.get("dutyCycle"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return Forward(currentRippleRatio, diodeVoltageDrop, inputVoltage, operatingPoints, dutyCycle, efficiency, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["currentRippleRatio"] = to_float(self.currentRippleRatio)
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(ForwardOperatingPoint, x), self.operatingPoints)
+        if self.dutyCycle is not None:
+            result["dutyCycle"] = from_union([to_float, from_none], self.dutyCycle)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+@dataclass
+class IsolatedBuckOperatingPoint:
+    """The description of one isolatedBuck operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrents: List[float]
+    """A list of output currents, one per output"""
+
+    outputVoltages: List[float]
+    """A list of output voltages, one per output"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'IsolatedBuckOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrents = from_list(from_float, obj.get("outputCurrents"))
+        outputVoltages = from_list(from_float, obj.get("outputVoltages"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return IsolatedBuckOperatingPoint(ambientTemperature, outputCurrents, outputVoltages, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrents"] = from_list(to_float, self.outputCurrents)
+        result["outputVoltages"] = from_list(to_float, self.outputVoltages)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class IsolatedBuck:
+    """The description of a Isolated Buck / Flybuck converter excitation"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the isolatedBuck"""
+
+    operatingPoints: List[IsolatedBuckOperatingPoint]
+    """A list of operating points"""
+
+    currentRippleRatio: Optional[float] = None
+    """The maximum current ripple allowed in the output"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'IsolatedBuck':
+        assert isinstance(obj, dict)
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(IsolatedBuckOperatingPoint.from_dict, obj.get("operatingPoints"))
+        currentRippleRatio = from_union([from_float, from_none], obj.get("currentRippleRatio"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return IsolatedBuck(diodeVoltageDrop, inputVoltage, operatingPoints, currentRippleRatio, efficiency, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(IsolatedBuckOperatingPoint, x), self.operatingPoints)
+        if self.currentRippleRatio is not None:
+            result["currentRippleRatio"] = from_union([to_float, from_none], self.currentRippleRatio)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+@dataclass
+class IsolatedBuckBoostOperatingPoint:
+    """The description of one isolatedBuckBoost operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrents: List[float]
+    """A list of output currents, one per output"""
+
+    outputVoltages: List[float]
+    """A list of output voltages, one per output"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'IsolatedBuckBoostOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrents = from_list(from_float, obj.get("outputCurrents"))
+        outputVoltages = from_list(from_float, obj.get("outputVoltages"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return IsolatedBuckBoostOperatingPoint(ambientTemperature, outputCurrents, outputVoltages, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrents"] = from_list(to_float, self.outputCurrents)
+        result["outputVoltages"] = from_list(to_float, self.outputVoltages)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class IsolatedBuckBoost:
+    """The description of a Isolated BuckBoost / FlyBuck - Boost converter excitation"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the isolatedBuckBoost"""
+
+    operatingPoints: List[IsolatedBuckBoostOperatingPoint]
+    """A list of operating points"""
+
+    currentRippleRatio: Optional[float] = None
+    """The maximum current ripple allowed in the output"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'IsolatedBuckBoost':
+        assert isinstance(obj, dict)
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(IsolatedBuckBoostOperatingPoint.from_dict, obj.get("operatingPoints"))
+        currentRippleRatio = from_union([from_float, from_none], obj.get("currentRippleRatio"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return IsolatedBuckBoost(diodeVoltageDrop, inputVoltage, operatingPoints, currentRippleRatio, efficiency, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(IsolatedBuckBoostOperatingPoint, x), self.operatingPoints)
+        if self.currentRippleRatio is not None:
+            result["currentRippleRatio"] = from_union([to_float, from_none], self.currentRippleRatio)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+@dataclass
+class PushPullOperatingPoint:
+    """The description of one pushPull operating point"""
+
+    ambientTemperature: float
+    """The ambient temperature of the operating point"""
+
+    outputCurrents: List[float]
+    """A list of output currents, one per output"""
+
+    outputVoltages: List[float]
+    """A list of output voltages, one per output"""
+
+    switchingFrequency: float
+    """The switching frequency of the operating point"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'PushPullOperatingPoint':
+        assert isinstance(obj, dict)
+        ambientTemperature = from_float(obj.get("ambientTemperature"))
+        outputCurrents = from_list(from_float, obj.get("outputCurrents"))
+        outputVoltages = from_list(from_float, obj.get("outputVoltages"))
+        switchingFrequency = from_float(obj.get("switchingFrequency"))
+        return PushPullOperatingPoint(ambientTemperature, outputCurrents, outputVoltages, switchingFrequency)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["ambientTemperature"] = to_float(self.ambientTemperature)
+        result["outputCurrents"] = from_list(to_float, self.outputCurrents)
+        result["outputVoltages"] = from_list(to_float, self.outputVoltages)
+        result["switchingFrequency"] = to_float(self.switchingFrequency)
+        return result
+
+
+@dataclass
+class PushPull:
+    """The description of a Push-Pull excitation"""
+
+    currentRippleRatio: float
+    """The maximum current ripple allowed in the output"""
+
+    diodeVoltageDrop: float
+    """The voltage drop on the diode"""
+
+    inputVoltage: DimensionWithTolerance
+    """The input voltage of the pushPull"""
+
+    operatingPoints: List[PushPullOperatingPoint]
+    """A list of operating points"""
+
+    dutyCycle: Optional[float] = None
+    """Duty cycle for the converter, maximum 50%"""
+
+    efficiency: Optional[float] = None
+    """The target efficiency"""
+
+    maximumDrainSourceVoltage: Optional[float] = None
+    """The maximum drain-source voltage in the selected switch"""
+
+    maximumSwitchCurrent: Optional[float] = None
+    """The maximum current that can go through the selected switch"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'PushPull':
+        assert isinstance(obj, dict)
+        currentRippleRatio = from_float(obj.get("currentRippleRatio"))
+        diodeVoltageDrop = from_float(obj.get("diodeVoltageDrop"))
+        inputVoltage = DimensionWithTolerance.from_dict(obj.get("inputVoltage"))
+        operatingPoints = from_list(PushPullOperatingPoint.from_dict, obj.get("operatingPoints"))
+        dutyCycle = from_union([from_float, from_none], obj.get("dutyCycle"))
+        efficiency = from_union([from_float, from_none], obj.get("efficiency"))
+        maximumDrainSourceVoltage = from_union([from_float, from_none], obj.get("maximumDrainSourceVoltage"))
+        maximumSwitchCurrent = from_union([from_float, from_none], obj.get("maximumSwitchCurrent"))
+        return PushPull(currentRippleRatio, diodeVoltageDrop, inputVoltage, operatingPoints, dutyCycle, efficiency, maximumDrainSourceVoltage, maximumSwitchCurrent)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["currentRippleRatio"] = to_float(self.currentRippleRatio)
+        result["diodeVoltageDrop"] = to_float(self.diodeVoltageDrop)
+        result["inputVoltage"] = to_class(DimensionWithTolerance, self.inputVoltage)
+        result["operatingPoints"] = from_list(lambda x: to_class(PushPullOperatingPoint, x), self.operatingPoints)
+        if self.dutyCycle is not None:
+            result["dutyCycle"] = from_union([to_float, from_none], self.dutyCycle)
+        if self.efficiency is not None:
+            result["efficiency"] = from_union([to_float, from_none], self.efficiency)
+        if self.maximumDrainSourceVoltage is not None:
+            result["maximumDrainSourceVoltage"] = from_union([to_float, from_none], self.maximumDrainSourceVoltage)
+        if self.maximumSwitchCurrent is not None:
+            result["maximumSwitchCurrent"] = from_union([to_float, from_none], self.maximumSwitchCurrent)
+        return result
+
+
+@dataclass
+class SupportedTopologies:
+    boost: Optional[Boost] = None
+    buck: Optional[Buck] = None
+    currentTransformer: Optional[CurrentTransformer] = None
+    flyback: Optional[Flyback] = None
+    forward: Optional[Forward] = None
+    isolatedBuck: Optional[IsolatedBuck] = None
+    isolatedBuckBoost: Optional[IsolatedBuckBoost] = None
+    pushPull: Optional[PushPull] = None
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'SupportedTopologies':
+        assert isinstance(obj, dict)
+        boost = from_union([Boost.from_dict, from_none], obj.get("boost"))
+        buck = from_union([Buck.from_dict, from_none], obj.get("buck"))
+        currentTransformer = from_union([CurrentTransformer.from_dict, from_none], obj.get("currentTransformer"))
+        flyback = from_union([Flyback.from_dict, from_none], obj.get("flyback"))
+        forward = from_union([Forward.from_dict, from_none], obj.get("forward"))
+        isolatedBuck = from_union([IsolatedBuck.from_dict, from_none], obj.get("isolatedBuck"))
+        isolatedBuckBoost = from_union([IsolatedBuckBoost.from_dict, from_none], obj.get("isolatedBuckBoost"))
+        pushPull = from_union([PushPull.from_dict, from_none], obj.get("pushPull"))
+        return SupportedTopologies(boost, buck, currentTransformer, flyback, forward, isolatedBuck, isolatedBuckBoost, pushPull)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.boost is not None:
+            result["boost"] = from_union([lambda x: to_class(Boost, x), from_none], self.boost)
+        if self.buck is not None:
+            result["buck"] = from_union([lambda x: to_class(Buck, x), from_none], self.buck)
+        if self.currentTransformer is not None:
+            result["currentTransformer"] = from_union([lambda x: to_class(CurrentTransformer, x), from_none], self.currentTransformer)
+        if self.flyback is not None:
+            result["flyback"] = from_union([lambda x: to_class(Flyback, x), from_none], self.flyback)
+        if self.forward is not None:
+            result["forward"] = from_union([lambda x: to_class(Forward, x), from_none], self.forward)
+        if self.isolatedBuck is not None:
+            result["isolatedBuck"] = from_union([lambda x: to_class(IsolatedBuck, x), from_none], self.isolatedBuck)
+        if self.isolatedBuckBoost is not None:
+            result["isolatedBuckBoost"] = from_union([lambda x: to_class(IsolatedBuckBoost, x), from_none], self.isolatedBuckBoost)
+        if self.pushPull is not None:
+            result["pushPull"] = from_union([lambda x: to_class(PushPull, x), from_none], self.pushPull)
+        return result
+
+
+@dataclass
+class ConverterInformation:
+    supportedTopologies: Optional[SupportedTopologies] = None
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'ConverterInformation':
+        assert isinstance(obj, dict)
+        supportedTopologies = from_union([SupportedTopologies.from_dict, from_none], obj.get("supportedTopologies"))
+        return ConverterInformation(supportedTopologies)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.supportedTopologies is not None:
+            result["supportedTopologies"] = from_union([lambda x: to_class(SupportedTopologies, x), from_none], self.supportedTopologies)
+        return result
+
+
+class Application(Enum):
+    """Application of the magnetic, can be Power, Signal Processing, or Interference Suppression"""
+
+    InterferenceSuppression = "Interference Suppression"
+    Power = "Power"
+    SignalProcessing = "Signal Processing"
+
+
 class CTI(Enum):
     """Required CTI"""
 
@@ -159,8 +922,10 @@ class CTI(Enum):
 
 
 class InsulationType(Enum):
-    """Required type of insulation"""
-
+    """Required type of insulation
+    
+    Insulation grade according to manufacturer
+    """
     Basic = "Basic"
     Double = "Double"
     Functional = "Functional"
@@ -201,8 +966,6 @@ class InsulationRequirements:
     """Required CTI"""
 
     insulationType: Optional[InsulationType] = None
-    """Required type of insulation"""
-
     mainSupplyVoltage: Optional[DimensionWithTolerance] = None
     """Voltage RMS of the main supply to which this transformer is connected to."""
 
@@ -351,13 +1114,27 @@ class ImpedanceAtFrequency:
         return result
 
 
-class ConnectionType(Enum):
-    """Type of the terminal"""
+class SubApplication(Enum):
+    """Sub application of the magnetic, can be Power Filtering, Transforming, Isolation, Common
+    Mode Noise Filtering, Differential Mode Noise Filtering
+    """
+    CommonModeNoiseFiltering = "Common Mode Noise Filtering"
+    DifferentialModeNoiseFiltering = "Differential Mode Noise Filtering"
+    Isolation = "Isolation"
+    PowerFiltering = "Power Filtering"
+    Transforming = "Transforming"
 
+
+class ConnectionType(Enum):
+    """Type of the terminal
+    
+    Recommended way of mounting according to manufacturer
+    """
     FlyingLead = "Flying Lead"
     Pin = "Pin"
     SMT = "SMT"
     Screw = "Screw"
+    THT = "THT"
 
 
 class Topologies(Enum):
@@ -367,25 +1144,30 @@ class Topologies(Enum):
     BoostConverter = "Boost Converter"
     BuckConverter = "Buck Converter"
     CukConverter = "Cuk Converter"
+    CurrentTransformer = "Current Transformer"
     FlybackConverter = "Flyback Converter"
     FullBridgeConverter = "Full-Bridge Converter"
     HalfBridgeConverter = "Half-Bridge Converter"
     InvertingBuckBoostConverter = "Inverting Buck-Boost Converter"
+    IsolatedBuckBoostConverter = "Isolated Buck-Boost Converter"
+    IsolatedBuckConverter = "Isolated Buck Converter"
     PhaseShiftedFullBridgeConverter = "Phase-Shifted Full-Bridge Converter"
     PushPullConverter = "Push-Pull Converter"
     SEPIC = "SEPIC"
     SingleSwitchForwardConverter = "Single Switch Forward Converter"
-    TwoSwitchFlybackConverter = "Two Switch Flyback Converter"
     TwoSwitchForwardConverter = "Two Switch Forward Converter"
     WeinbergConverter = "Weinberg Converter"
     ZetaConverter = "Zeta Converter"
 
 
 class WiringTechnology(Enum):
-    """Technology that must be used to create the wiring"""
-
+    """Technology that must be used to create the wiring
+    
+    Type of the layer
+    """
     Deposition = "Deposition"
     Printed = "Printed"
+    Stamped = "Stamped"
     Wound = "Wound"
 
 
@@ -401,6 +1183,7 @@ class DesignRequirements:
     turnsRatios: List[DimensionWithTolerance]
     """Required turns ratios between primary and the rest of windings"""
 
+    application: Optional[Application] = None
     insulation: Optional[InsulationRequirements] = None
     isolationSides: Optional[List[IsolationSide]] = None
     """Isolation side where each winding is connected to."""
@@ -429,6 +1212,7 @@ class DesignRequirements:
     strayCapacitance: Optional[List[DimensionWithTolerance]] = None
     """Required values for the stray capacitance"""
 
+    subApplication: Optional[SubApplication] = None
     terminalType: Optional[List[ConnectionType]] = None
     """Type of the terminal that must be used, per winding"""
 
@@ -436,13 +1220,13 @@ class DesignRequirements:
     """Topology that will use the magnetic"""
 
     wiringTechnology: Optional[WiringTechnology] = None
-    """Technology that must be used to create the wiring"""
 
     @staticmethod
     def from_dict(obj: Any) -> 'DesignRequirements':
         assert isinstance(obj, dict)
         magnetizingInductance = DimensionWithTolerance.from_dict(obj.get("magnetizingInductance"))
         turnsRatios = from_list(DimensionWithTolerance.from_dict, obj.get("turnsRatios"))
+        application = from_union([Application, from_none], obj.get("application"))
         insulation = from_union([InsulationRequirements.from_dict, from_none], obj.get("insulation"))
         isolationSides = from_union([lambda x: from_list(IsolationSide, x), from_none], obj.get("isolationSides"))
         leakageInductance = from_union([lambda x: from_list(DimensionWithTolerance.from_dict, x), from_none], obj.get("leakageInductance"))
@@ -453,15 +1237,18 @@ class DesignRequirements:
         name = from_union([from_str, from_none], obj.get("name"))
         operatingTemperature = from_union([DimensionWithTolerance.from_dict, from_none], obj.get("operatingTemperature"))
         strayCapacitance = from_union([lambda x: from_list(DimensionWithTolerance.from_dict, x), from_none], obj.get("strayCapacitance"))
+        subApplication = from_union([SubApplication, from_none], obj.get("subApplication"))
         terminalType = from_union([lambda x: from_list(ConnectionType, x), from_none], obj.get("terminalType"))
         topology = from_union([Topologies, from_none], obj.get("topology"))
         wiringTechnology = from_union([WiringTechnology, from_none], obj.get("wiringTechnology"))
-        return DesignRequirements(magnetizingInductance, turnsRatios, insulation, isolationSides, leakageInductance, market, maximumDimensions, maximumWeight, minimumImpedance, name, operatingTemperature, strayCapacitance, terminalType, topology, wiringTechnology)
+        return DesignRequirements(magnetizingInductance, turnsRatios, application, insulation, isolationSides, leakageInductance, market, maximumDimensions, maximumWeight, minimumImpedance, name, operatingTemperature, strayCapacitance, subApplication, terminalType, topology, wiringTechnology)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["magnetizingInductance"] = to_class(DimensionWithTolerance, self.magnetizingInductance)
         result["turnsRatios"] = from_list(lambda x: to_class(DimensionWithTolerance, x), self.turnsRatios)
+        if self.application is not None:
+            result["application"] = from_union([lambda x: to_enum(Application, x), from_none], self.application)
         if self.insulation is not None:
             result["insulation"] = from_union([lambda x: to_class(InsulationRequirements, x), from_none], self.insulation)
         if self.isolationSides is not None:
@@ -482,6 +1269,8 @@ class DesignRequirements:
             result["operatingTemperature"] = from_union([lambda x: to_class(DimensionWithTolerance, x), from_none], self.operatingTemperature)
         if self.strayCapacitance is not None:
             result["strayCapacitance"] = from_union([lambda x: from_list(lambda x: to_class(DimensionWithTolerance, x), x), from_none], self.strayCapacitance)
+        if self.subApplication is not None:
+            result["subApplication"] = from_union([lambda x: to_enum(SubApplication, x), from_none], self.subApplication)
         if self.terminalType is not None:
             result["terminalType"] = from_union([lambda x: from_list(lambda x: to_enum(ConnectionType, x), x), from_none], self.terminalType)
         if self.topology is not None:
@@ -637,26 +1426,6 @@ class Harmonics:
         return result
 
 
-class WaveformLabel(Enum):
-    """Label of the waveform, if applicable. Used for common waveforms"""
-
-    BipolarRectangular = "Bipolar Rectangular"
-    BipolarTriangular = "Bipolar Triangular"
-    Custom = "Custom"
-    FlybackPrimary = "Flyback Primary"
-    FlybackSecondary = "Flyback Secondary"
-    FlybackSecondaryWithDeadtime = "Flyback Secondary With Deadtime"
-    Rectangular = "Rectangular"
-    RectangularDCM = "RectangularDCM"
-    RectangularWithDeadtime = "Rectangular With Deadtime"
-    SecondaryRectangular = "Secondary Rectangular"
-    SecondaryRectangularWithDeadtime = "Secondary Rectangular With Deadtime"
-    Sinusoidal = "Sinusoidal"
-    Triangular = "Triangular"
-    UnipolarRectangular = "Unipolar Rectangular"
-    UnipolarTriangular = "Unipolar Triangular"
-
-
 @dataclass
 class Processed:
     label: WaveformLabel
@@ -680,14 +1449,20 @@ class Processed:
     """The effective frequency value of the waveform, according to
     https://sci-hub.wf/https://ieeexplore.ieee.org/document/750181, Appendix C
     """
-    peak: Optional[float] = None
+    negativePeak: Optional[float] = None
     """The maximum positive value of the waveform"""
+
+    peak: Optional[float] = None
+    """The maximum absolute value of the waveform"""
 
     peakToPeak: Optional[float] = None
     """The peak to peak value of the waveform"""
 
     phase: Optional[float] = None
     """The phase of the waveform, in degrees"""
+
+    positivePeak: Optional[float] = None
+    """The maximum positive value of the waveform"""
 
     rms: Optional[float] = None
     """The RMS value of the waveform"""
@@ -707,12 +1482,14 @@ class Processed:
         deadTime = from_union([from_float, from_none], obj.get("deadTime"))
         dutyCycle = from_union([from_float, from_none], obj.get("dutyCycle"))
         effectiveFrequency = from_union([from_float, from_none], obj.get("effectiveFrequency"))
+        negativePeak = from_union([from_float, from_none], obj.get("negativePeak"))
         peak = from_union([from_float, from_none], obj.get("peak"))
         peakToPeak = from_union([from_float, from_none], obj.get("peakToPeak"))
         phase = from_union([from_float, from_none], obj.get("phase"))
+        positivePeak = from_union([from_float, from_none], obj.get("positivePeak"))
         rms = from_union([from_float, from_none], obj.get("rms"))
         thd = from_union([from_float, from_none], obj.get("thd"))
-        return Processed(label, offset, acEffectiveFrequency, average, deadTime, dutyCycle, effectiveFrequency, peak, peakToPeak, phase, rms, thd)
+        return Processed(label, offset, acEffectiveFrequency, average, deadTime, dutyCycle, effectiveFrequency, negativePeak, peak, peakToPeak, phase, positivePeak, rms, thd)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -728,12 +1505,16 @@ class Processed:
             result["dutyCycle"] = from_union([to_float, from_none], self.dutyCycle)
         if self.effectiveFrequency is not None:
             result["effectiveFrequency"] = from_union([to_float, from_none], self.effectiveFrequency)
+        if self.negativePeak is not None:
+            result["negativePeak"] = from_union([to_float, from_none], self.negativePeak)
         if self.peak is not None:
             result["peak"] = from_union([to_float, from_none], self.peak)
         if self.peakToPeak is not None:
             result["peakToPeak"] = from_union([to_float, from_none], self.peakToPeak)
         if self.phase is not None:
             result["phase"] = from_union([to_float, from_none], self.phase)
+        if self.positivePeak is not None:
+            result["positivePeak"] = from_union([to_float, from_none], self.positivePeak)
         if self.rms is not None:
             result["rms"] = from_union([to_float, from_none], self.rms)
         if self.thd is not None:
@@ -898,17 +1679,22 @@ class Inputs:
     operatingPoints: List[OperatingPoint]
     """Data describing the operating points"""
 
+    converterInformation: Optional[ConverterInformation] = None
+
     @staticmethod
     def from_dict(obj: Any) -> 'Inputs':
         assert isinstance(obj, dict)
         designRequirements = DesignRequirements.from_dict(obj.get("designRequirements"))
         operatingPoints = from_list(OperatingPoint.from_dict, obj.get("operatingPoints"))
-        return Inputs(designRequirements, operatingPoints)
+        converterInformation = from_union([ConverterInformation.from_dict, from_none], obj.get("converterInformation"))
+        return Inputs(designRequirements, operatingPoints, converterInformation)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["designRequirements"] = to_class(DesignRequirements, self.designRequirements)
         result["operatingPoints"] = from_list(lambda x: to_class(OperatingPoint, x), self.operatingPoints)
+        if self.converterInformation is not None:
+            result["converterInformation"] = from_union([lambda x: to_class(ConverterInformation, x), from_none], self.converterInformation)
         return result
 
 
@@ -984,7 +1770,7 @@ class DistributorInfo:
 
 
 @dataclass
-class PinWIndingConnection:
+class PinWindingConnection:
     pin: Optional[str] = None
     """The name of the connected pin"""
 
@@ -992,11 +1778,11 @@ class PinWIndingConnection:
     """The name of the connected winding"""
 
     @staticmethod
-    def from_dict(obj: Any) -> 'PinWIndingConnection':
+    def from_dict(obj: Any) -> 'PinWindingConnection':
         assert isinstance(obj, dict)
         pin = from_union([from_str, from_none], obj.get("pin"))
         winding = from_union([from_str, from_none], obj.get("winding"))
-        return PinWIndingConnection(pin, winding)
+        return PinWindingConnection(pin, winding)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -1094,9 +1880,7 @@ class Pinout:
     """The number of pins"""
 
     pinDescription: Pin
-    pitch: List[float]
-    """The distance between pins, per row, by pin order"""
-
+    pitch: Union[List[float], float]
     rowDistance: float
     """The distance between a row of pins and the center of the bobbin"""
 
@@ -1114,7 +1898,7 @@ class Pinout:
         assert isinstance(obj, dict)
         numberPins = from_int(obj.get("numberPins"))
         pinDescription = Pin.from_dict(obj.get("pinDescription"))
-        pitch = from_list(from_float, obj.get("pitch"))
+        pitch = from_union([lambda x: from_list(from_float, x), from_float], obj.get("pitch"))
         rowDistance = from_float(obj.get("rowDistance"))
         centralPitch = from_union([from_float, from_none], obj.get("centralPitch"))
         numberPinsPerRow = from_union([lambda x: from_list(from_int, x), from_none], obj.get("numberPinsPerRow"))
@@ -1125,7 +1909,7 @@ class Pinout:
         result: dict = {}
         result["numberPins"] = from_int(self.numberPins)
         result["pinDescription"] = to_class(Pin, self.pinDescription)
-        result["pitch"] = from_list(to_float, self.pitch)
+        result["pitch"] = from_union([lambda x: from_list(to_float, x), to_float], self.pitch)
         result["rowDistance"] = to_float(self.rowDistance)
         if self.centralPitch is not None:
             result["centralPitch"] = from_union([to_float, from_none], self.centralPitch)
@@ -1162,7 +1946,7 @@ class BobbinFunctionalDescription:
     type: FunctionalDescriptionType
     """The type of a bobbin"""
 
-    connections: Optional[List[PinWIndingConnection]] = None
+    connections: Optional[List[PinWindingConnection]] = None
     """List of connections between windings and pins"""
 
     familySubtype: Optional[str] = None
@@ -1177,7 +1961,7 @@ class BobbinFunctionalDescription:
         family = BobbinFamily(obj.get("family"))
         shape = from_str(obj.get("shape"))
         type = FunctionalDescriptionType(obj.get("type"))
-        connections = from_union([lambda x: from_list(PinWIndingConnection.from_dict, x), from_none], obj.get("connections"))
+        connections = from_union([lambda x: from_list(PinWindingConnection.from_dict, x), from_none], obj.get("connections"))
         familySubtype = from_union([from_str, from_none], obj.get("familySubtype"))
         pinout = from_union([Pinout.from_dict, from_none], obj.get("pinout"))
         return BobbinFunctionalDescription(dimensions, family, shape, type, connections, familySubtype, pinout)
@@ -1189,7 +1973,7 @@ class BobbinFunctionalDescription:
         result["shape"] = from_str(self.shape)
         result["type"] = to_enum(FunctionalDescriptionType, self.type)
         if self.connections is not None:
-            result["connections"] = from_union([lambda x: from_list(lambda x: to_class(PinWIndingConnection, x), x), from_none], self.connections)
+            result["connections"] = from_union([lambda x: from_list(lambda x: to_class(PinWindingConnection, x), x), from_none], self.connections)
         if self.familySubtype is not None:
             result["familySubtype"] = from_union([from_str, from_none], self.familySubtype)
         if self.pinout is not None:
@@ -1218,6 +2002,9 @@ class ManufacturerInfo:
     datasheetUrl: Optional[str] = None
     """The manufacturer's URL to the datasheet of the product"""
 
+    description: Optional[str] = None
+    """The description of the part according to its manufacturer"""
+
     family: Optional[str] = None
     """The family of a magnetic, as defined by the manufacturer"""
 
@@ -1236,11 +2023,12 @@ class ManufacturerInfo:
         name = from_str(obj.get("name"))
         cost = from_union([from_str, from_none], obj.get("cost"))
         datasheetUrl = from_union([from_str, from_none], obj.get("datasheetUrl"))
+        description = from_union([from_str, from_none], obj.get("description"))
         family = from_union([from_str, from_none], obj.get("family"))
         orderCode = from_union([from_str, from_none], obj.get("orderCode"))
         reference = from_union([from_str, from_none], obj.get("reference"))
         status = from_union([Status, from_none], obj.get("status"))
-        return ManufacturerInfo(name, cost, datasheetUrl, family, orderCode, reference, status)
+        return ManufacturerInfo(name, cost, datasheetUrl, description, family, orderCode, reference, status)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -1249,6 +2037,8 @@ class ManufacturerInfo:
             result["cost"] = from_union([from_str, from_none], self.cost)
         if self.datasheetUrl is not None:
             result["datasheetUrl"] = from_union([from_str, from_none], self.datasheetUrl)
+        if self.description is not None:
+            result["description"] = from_union([from_str, from_none], self.description)
         if self.family is not None:
             result["family"] = from_union([from_str, from_none], self.family)
         if self.orderCode is not None:
@@ -1480,9 +2270,19 @@ class Bobbin:
         return result
 
 
+class Direction(Enum):
+    """Direction of the current in the connection"""
+
+    input = "input"
+    output = "output"
+
+
 @dataclass
 class ConnectionElement:
     """Data describing the connection of the a wire"""
+
+    direction: Optional[Direction] = None
+    """Direction of the current in the connection"""
 
     length: Optional[float] = None
     """Length of the connection, counted from the exit of the last turn until the terminal, in m"""
@@ -1498,14 +2298,17 @@ class ConnectionElement:
     @staticmethod
     def from_dict(obj: Any) -> 'ConnectionElement':
         assert isinstance(obj, dict)
+        direction = from_union([Direction, from_none], obj.get("direction"))
         length = from_union([from_float, from_none], obj.get("length"))
         metric = from_union([from_int, from_none], obj.get("metric"))
         pinName = from_union([from_str, from_none], obj.get("pinName"))
         type = from_union([ConnectionType, from_none], obj.get("type"))
-        return ConnectionElement(length, metric, pinName, type)
+        return ConnectionElement(direction, length, metric, pinName, type)
 
     def to_dict(self) -> dict:
         result: dict = {}
+        if self.direction is not None:
+            result["direction"] = from_union([lambda x: to_enum(Direction, x), from_none], self.direction)
         if self.length is not None:
             result["length"] = from_union([to_float, from_none], self.length)
         if self.metric is not None:
@@ -1593,9 +2396,7 @@ class InsulationMaterial:
     composition: Optional[str] = None
     """The composition of a insulation material"""
 
-    manufacturer: Optional[str] = None
-    """The manufacturer of the insulation material"""
-
+    manufacturerInfo: Optional[ManufacturerInfo] = None
     meltingPoint: Optional[float] = None
     """The melting temperature of the insulation material, in Celsius"""
 
@@ -1621,14 +2422,14 @@ class InsulationMaterial:
         name = from_str(obj.get("name"))
         aliases = from_union([lambda x: from_list(from_str, x), from_none], obj.get("aliases"))
         composition = from_union([from_str, from_none], obj.get("composition"))
-        manufacturer = from_union([from_str, from_none], obj.get("manufacturer"))
+        manufacturerInfo = from_union([ManufacturerInfo.from_dict, from_none], obj.get("manufacturerInfo"))
         meltingPoint = from_union([from_float, from_none], obj.get("meltingPoint"))
         relativePermittivity = from_union([from_float, from_none], obj.get("relativePermittivity"))
         resistivity = from_union([lambda x: from_list(ResistivityPoint.from_dict, x), from_none], obj.get("resistivity"))
         specificHeat = from_union([from_float, from_none], obj.get("specificHeat"))
         temperatureClass = from_union([from_float, from_none], obj.get("temperatureClass"))
         thermalConductivity = from_union([from_float, from_none], obj.get("thermalConductivity"))
-        return InsulationMaterial(dielectricStrength, name, aliases, composition, manufacturer, meltingPoint, relativePermittivity, resistivity, specificHeat, temperatureClass, thermalConductivity)
+        return InsulationMaterial(dielectricStrength, name, aliases, composition, manufacturerInfo, meltingPoint, relativePermittivity, resistivity, specificHeat, temperatureClass, thermalConductivity)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -1638,8 +2439,8 @@ class InsulationMaterial:
             result["aliases"] = from_union([lambda x: from_list(from_str, x), from_none], self.aliases)
         if self.composition is not None:
             result["composition"] = from_union([from_str, from_none], self.composition)
-        if self.manufacturer is not None:
-            result["manufacturer"] = from_union([from_str, from_none], self.manufacturer)
+        if self.manufacturerInfo is not None:
+            result["manufacturerInfo"] = from_union([lambda x: to_class(ManufacturerInfo, x), from_none], self.manufacturerInfo)
         if self.meltingPoint is not None:
             result["meltingPoint"] = from_union([to_float, from_none], self.meltingPoint)
         if self.relativePermittivity is not None:
@@ -2039,6 +2840,9 @@ class CoilFunctionalDescription:
     connections: Optional[List[ConnectionElement]] = None
     """Array on elements, representing the all the pins this winding is connected to"""
 
+    woundWith: Optional[List[str]] = None
+    """Lis of winding names that are wound together with this winding"""
+
     @staticmethod
     def from_dict(obj: Any) -> 'CoilFunctionalDescription':
         assert isinstance(obj, dict)
@@ -2048,7 +2852,8 @@ class CoilFunctionalDescription:
         numberTurns = from_int(obj.get("numberTurns"))
         wire = from_union([Wire.from_dict, from_str], obj.get("wire"))
         connections = from_union([lambda x: from_list(ConnectionElement.from_dict, x), from_none], obj.get("connections"))
-        return CoilFunctionalDescription(isolationSide, name, numberParallels, numberTurns, wire, connections)
+        woundWith = from_union([lambda x: from_list(from_str, x), from_none], obj.get("woundWith"))
+        return CoilFunctionalDescription(isolationSide, name, numberParallels, numberTurns, wire, connections, woundWith)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -2059,6 +2864,8 @@ class CoilFunctionalDescription:
         result["wire"] = from_union([lambda x: to_class(Wire, x), from_str], self.wire)
         if self.connections is not None:
             result["connections"] = from_union([lambda x: from_list(lambda x: to_class(ConnectionElement, x), x), from_none], self.connections)
+        if self.woundWith is not None:
+            result["woundWith"] = from_union([lambda x: from_list(from_str, x), from_none], self.woundWith)
         return result
 
 
@@ -2099,6 +2906,57 @@ class PartialWinding:
         result["winding"] = from_str(self.winding)
         if self.connections is not None:
             result["connections"] = from_union([lambda x: from_list(lambda x: to_class(ConnectionElement, x), x), from_none], self.connections)
+        return result
+
+
+@dataclass
+class Group:
+    """Data describing one group in a magnetic, which can include several sections. Ideally this
+    is used for PCB or different winding windows
+    """
+    coordinates: List[float]
+    """The coordinates of the center of the section, referred to the center of the main column"""
+
+    dimensions: List[float]
+    """Dimensions of the rectangle defining the group"""
+
+    name: str
+    """Name given to the group"""
+
+    partialWindings: List[PartialWinding]
+    """List of partial windings in this group"""
+
+    sectionsOrientation: WindingOrientation
+    """Way in which the sections are oriented inside the winding window"""
+
+    type: WiringTechnology
+    """Type of the layer"""
+
+    coordinateSystem: Optional[CoordinateSystem] = None
+    """System in which dimension and coordinates are in"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'Group':
+        assert isinstance(obj, dict)
+        coordinates = from_list(from_float, obj.get("coordinates"))
+        dimensions = from_list(from_float, obj.get("dimensions"))
+        name = from_str(obj.get("name"))
+        partialWindings = from_list(PartialWinding.from_dict, obj.get("partialWindings"))
+        sectionsOrientation = WindingOrientation(obj.get("sectionsOrientation"))
+        type = WiringTechnology(obj.get("type"))
+        coordinateSystem = from_union([CoordinateSystem, from_none], obj.get("coordinateSystem"))
+        return Group(coordinates, dimensions, name, partialWindings, sectionsOrientation, type, coordinateSystem)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["coordinates"] = from_list(to_float, self.coordinates)
+        result["dimensions"] = from_list(to_float, self.dimensions)
+        result["name"] = from_str(self.name)
+        result["partialWindings"] = from_list(lambda x: to_class(PartialWinding, x), self.partialWindings)
+        result["sectionsOrientation"] = to_enum(WindingOrientation, self.sectionsOrientation)
+        result["type"] = to_enum(WiringTechnology, self.type)
+        if self.coordinateSystem is not None:
+            result["coordinateSystem"] = from_union([lambda x: to_enum(CoordinateSystem, x), from_none], self.coordinateSystem)
         return result
 
 
@@ -2207,6 +3065,48 @@ class Layer:
 
 
 @dataclass
+class MarginInfo:
+    """Data describing the information about the margin of a section"""
+
+    bottomOrRightWidth: float
+    """Width of the margin in the bottom or right side of the section, along where the clearance
+    would happen. Also the width of the tape to implement it.
+    """
+    layerThickness: float
+    """Thickness of the layers to implement the margin"""
+
+    numberLayers: int
+    """Number of layers to implement the margin"""
+
+    topOrLeftWidth: float
+    """Width of the margin in the top or left side of the section, along where the clearance
+    would happen. Also the width of the tape to implement it.
+    """
+    insulationMaterial: Optional[Union[InsulationMaterial, str]] = None
+    """In case of insulating layer, the material used"""
+
+    @staticmethod
+    def from_dict(obj: Any) -> 'MarginInfo':
+        assert isinstance(obj, dict)
+        bottomOrRightWidth = from_float(obj.get("bottomOrRightWidth"))
+        layerThickness = from_float(obj.get("layerThickness"))
+        numberLayers = from_int(obj.get("numberLayers"))
+        topOrLeftWidth = from_float(obj.get("topOrLeftWidth"))
+        insulationMaterial = from_union([InsulationMaterial.from_dict, from_str, from_none], obj.get("insulationMaterial"))
+        return MarginInfo(bottomOrRightWidth, layerThickness, numberLayers, topOrLeftWidth, insulationMaterial)
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        result["bottomOrRightWidth"] = to_float(self.bottomOrRightWidth)
+        result["layerThickness"] = to_float(self.layerThickness)
+        result["numberLayers"] = from_int(self.numberLayers)
+        result["topOrLeftWidth"] = to_float(self.topOrLeftWidth)
+        if self.insulationMaterial is not None:
+            result["insulationMaterial"] = from_union([lambda x: to_class(InsulationMaterial, x), from_str, from_none], self.insulationMaterial)
+        return result
+
+
+@dataclass
 class Section:
     """Data describing one section in a magnetic"""
 
@@ -2234,13 +3134,19 @@ class Section:
     fillingFactor: Optional[float] = None
     """How much space in this section is used by wires compared to the total"""
 
+    group: Optional[str] = None
+    """The name of the group that this section belongs to"""
+
     layersAlignment: Optional[CoilAlignment] = None
     """Way in which the layers are aligned inside the section"""
 
-    margin: Optional[List[float]] = None
+    margin: Optional[Union[MarginInfo, List[float]]] = None
     """Defines the distance in extremes of the section that is reserved to be filled with margin
     tape. It is an array os two elements from inner or top, to outer or bottom
     """
+    numberLayers: Optional[float] = None
+    """Optional field to force how many layers must fit in a section"""
+
     windingStyle: Optional[WindingStyle] = None
     """Defines if the section is wound by consecutive turns or parallels"""
 
@@ -2255,10 +3161,12 @@ class Section:
         type = ElectricalType(obj.get("type"))
         coordinateSystem = from_union([CoordinateSystem, from_none], obj.get("coordinateSystem"))
         fillingFactor = from_union([from_float, from_none], obj.get("fillingFactor"))
+        group = from_union([from_str, from_none], obj.get("group"))
         layersAlignment = from_union([CoilAlignment, from_none], obj.get("layersAlignment"))
-        margin = from_union([lambda x: from_list(from_float, x), from_none], obj.get("margin"))
+        margin = from_union([MarginInfo.from_dict, lambda x: from_list(from_float, x), from_none], obj.get("margin"))
+        numberLayers = from_union([from_float, from_none], obj.get("numberLayers"))
         windingStyle = from_union([WindingStyle, from_none], obj.get("windingStyle"))
-        return Section(coordinates, dimensions, layersOrientation, name, partialWindings, type, coordinateSystem, fillingFactor, layersAlignment, margin, windingStyle)
+        return Section(coordinates, dimensions, layersOrientation, name, partialWindings, type, coordinateSystem, fillingFactor, group, layersAlignment, margin, numberLayers, windingStyle)
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -2272,10 +3180,14 @@ class Section:
             result["coordinateSystem"] = from_union([lambda x: to_enum(CoordinateSystem, x), from_none], self.coordinateSystem)
         if self.fillingFactor is not None:
             result["fillingFactor"] = from_union([to_float, from_none], self.fillingFactor)
+        if self.group is not None:
+            result["group"] = from_union([from_str, from_none], self.group)
         if self.layersAlignment is not None:
             result["layersAlignment"] = from_union([lambda x: to_enum(CoilAlignment, x), from_none], self.layersAlignment)
         if self.margin is not None:
-            result["margin"] = from_union([lambda x: from_list(to_float, x), from_none], self.margin)
+            result["margin"] = from_union([lambda x: to_class(MarginInfo, x), lambda x: from_list(to_float, x), from_none], self.margin)
+        if self.numberLayers is not None:
+            result["numberLayers"] = from_union([to_float, from_none], self.numberLayers)
         if self.windingStyle is not None:
             result["windingStyle"] = from_union([lambda x: to_enum(WindingStyle, x), from_none], self.windingStyle)
         return result
@@ -2387,6 +3299,10 @@ class Coil:
     """The data from the coil based on its function, in a way that can be used by analytical
     models of only Magnetism.
     """
+    groupsDescription: Optional[List[Group]] = None
+    """The data from the coil at the gtoup level. A group may define a PCB, or different winding
+    windows.
+    """
     layersDescription: Optional[List[Layer]] = None
     """The data from the coil at the layer level, in a way that can be used by more advanced
     analytical and finite element models
@@ -2405,15 +3321,18 @@ class Coil:
         assert isinstance(obj, dict)
         bobbin = from_union([Bobbin.from_dict, from_str], obj.get("bobbin"))
         functionalDescription = from_list(CoilFunctionalDescription.from_dict, obj.get("functionalDescription"))
+        groupsDescription = from_union([lambda x: from_list(Group.from_dict, x), from_none], obj.get("groupsDescription"))
         layersDescription = from_union([lambda x: from_list(Layer.from_dict, x), from_none], obj.get("layersDescription"))
         sectionsDescription = from_union([lambda x: from_list(Section.from_dict, x), from_none], obj.get("sectionsDescription"))
         turnsDescription = from_union([lambda x: from_list(Turn.from_dict, x), from_none], obj.get("turnsDescription"))
-        return Coil(bobbin, functionalDescription, layersDescription, sectionsDescription, turnsDescription)
+        return Coil(bobbin, functionalDescription, groupsDescription, layersDescription, sectionsDescription, turnsDescription)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["bobbin"] = from_union([lambda x: to_class(Bobbin, x), from_str], self.bobbin)
         result["functionalDescription"] = from_list(lambda x: to_class(CoilFunctionalDescription, x), self.functionalDescription)
+        if self.groupsDescription is not None:
+            result["groupsDescription"] = from_union([lambda x: from_list(lambda x: to_class(Group, x), x), from_none], self.groupsDescription)
         if self.layersDescription is not None:
             result["layersDescription"] = from_union([lambda x: from_list(lambda x: to_class(Layer, x), x), from_none], self.layersDescription)
         if self.sectionsDescription is not None:
@@ -2586,7 +3505,7 @@ class MagneticsCoreLossesMethodData:
         return result
 
 
-class MaterialEnum(Enum):
+class MaterialType(Enum):
     """The composition of a magnetic material"""
 
     amorphous = "amorphous"
@@ -2654,6 +3573,9 @@ class MagneticFieldDcBiasFactor:
     
     Field with the coefficients used to calculate how much the permeability decreases with
     the H DC bias, as factor = a + b * pow(H, c) + d
+    
+    Field with the coefficients used to calculate how much the permeability decreases with
+    the H DC bias, as factor = 1 / (a + b * pow(H, c))
     """
     a: float
     b: float
@@ -2717,6 +3639,8 @@ class InitialPermeabilitModifierMethod(Enum):
     fairrite = "fair-rite"
     magnetics = "magnetics"
     micrometals = "micrometals"
+    poco = "poco"
+    tdg = "tdg"
 
 
 @dataclass
@@ -2770,7 +3694,12 @@ class InitialPermeabilitModifier:
     
     Coefficients given by Micrometals in order to calculate the permeability of their cores
     
-    Coefficients given by Fair-Rite in order to calculate the permeability of their materials
+    Coefficients given by Fair-Rite in order to calculate the permeability of their
+    materials
+    
+    Coefficients given by Poco in order to calculate the permeability of their materials
+    
+    Coefficients given by TDG in order to calculate the permeability of their materials
     """
     frequencyFactor: Optional[FrequencyFactor] = None
     """Field with the coefficients used to calculate how much the permeability decreases with
@@ -2785,6 +3714,9 @@ class InitialPermeabilitModifier:
     
     Field with the coefficients used to calculate how much the permeability decreases with
     the H DC bias, as factor = a + b * pow(H, c) + d
+    
+    Field with the coefficients used to calculate how much the permeability decreases with
+    the H DC bias, as factor = 1 / (a + b * pow(H, c))
     """
     method: Optional[InitialPermeabilitModifierMethod] = None
     """Name of this method"""
@@ -3041,8 +3973,10 @@ class VolumetricCoreLossesMethodType(Enum):
     lossFactor = "lossFactor"
     magnetics = "magnetics"
     micrometals = "micrometals"
+    poco = "poco"
     roshen = "roshen"
     steinmetz = "steinmetz"
+    tdg = "tdg"
 
 
 @dataclass
@@ -3112,6 +4046,10 @@ class CoreLossesMethodData:
     
     Magnetics method for estimating volumetric losses
     
+    Poco method for estimating volumetric losses
+    
+    TDG method for estimating volumetric losses
+    
     Loss factor method for estimating volumetric losses
     """
     method: VolumetricCoreLossesMethodType
@@ -3172,7 +4110,7 @@ class CoreMaterial:
     """A material for the magnetic cores"""
 
     manufacturerInfo: ManufacturerInfo
-    material: MaterialEnum
+    material: MaterialType
     """The composition of a magnetic material"""
 
     name: str
@@ -3194,6 +4132,10 @@ class CoreMaterial:
     volumetricLosses: Dict[str, List[Union[CoreLossesMethodData, List[VolumetricLossesPoint]]]]
     """The data regarding the volumetric losses of a magnetic material"""
 
+    alternatives: Optional[List[str]] = None
+    """A list of alternative materials that could replace this one"""
+
+    application: Optional[Application] = None
     bhCycle: Optional[List[SaturationElement]] = None
     coerciveForce: Optional[List[SaturationElement]] = None
     """BH Cycle points where the magnetic flux density is 0"""
@@ -3229,13 +4171,15 @@ class CoreMaterial:
     def from_dict(obj: Any) -> 'CoreMaterial':
         assert isinstance(obj, dict)
         manufacturerInfo = ManufacturerInfo.from_dict(obj.get("manufacturerInfo"))
-        material = MaterialEnum(obj.get("material"))
+        material = MaterialType(obj.get("material"))
         name = from_str(obj.get("name"))
         permeability = Permeabilities.from_dict(obj.get("permeability"))
         resistivity = from_list(ResistivityPoint.from_dict, obj.get("resistivity"))
         saturation = from_list(SaturationElement.from_dict, obj.get("saturation"))
         type = CoreMaterialType(obj.get("type"))
         volumetricLosses = from_dict(lambda x: from_list(lambda x: from_union([CoreLossesMethodData.from_dict, lambda x: from_list(VolumetricLossesPoint.from_dict, x)], x), x), obj.get("volumetricLosses"))
+        alternatives = from_union([lambda x: from_list(from_str, x), from_none], obj.get("alternatives"))
+        application = from_union([Application, from_none], obj.get("application"))
         bhCycle = from_union([lambda x: from_list(SaturationElement.from_dict, x), from_none], obj.get("bhCycle"))
         coerciveForce = from_union([lambda x: from_list(SaturationElement.from_dict, x), from_none], obj.get("coerciveForce"))
         commercialName = from_union([from_str, from_none], obj.get("commercialName"))
@@ -3247,18 +4191,22 @@ class CoreMaterial:
         massLosses = from_union([lambda x: from_dict(lambda x: from_list(lambda x: from_union([MagneticsCoreLossesMethodData.from_dict, lambda x: from_list(MassLossesPoint.from_dict, x)], x), x), x), from_none], obj.get("massLosses"))
         materialComposition = from_union([MaterialComposition, from_none], obj.get("materialComposition"))
         remanence = from_union([lambda x: from_list(SaturationElement.from_dict, x), from_none], obj.get("remanence"))
-        return CoreMaterial(manufacturerInfo, material, name, permeability, resistivity, saturation, type, volumetricLosses, bhCycle, coerciveForce, commercialName, curieTemperature, density, family, heatCapacity, heatConductivity, massLosses, materialComposition, remanence)
+        return CoreMaterial(manufacturerInfo, material, name, permeability, resistivity, saturation, type, volumetricLosses, alternatives, application, bhCycle, coerciveForce, commercialName, curieTemperature, density, family, heatCapacity, heatConductivity, massLosses, materialComposition, remanence)
 
     def to_dict(self) -> dict:
         result: dict = {}
         result["manufacturerInfo"] = to_class(ManufacturerInfo, self.manufacturerInfo)
-        result["material"] = to_enum(MaterialEnum, self.material)
+        result["material"] = to_enum(MaterialType, self.material)
         result["name"] = from_str(self.name)
         result["permeability"] = to_class(Permeabilities, self.permeability)
         result["resistivity"] = from_list(lambda x: to_class(ResistivityPoint, x), self.resistivity)
         result["saturation"] = from_list(lambda x: to_class(SaturationElement, x), self.saturation)
         result["type"] = to_enum(CoreMaterialType, self.type)
         result["volumetricLosses"] = from_dict(lambda x: from_list(lambda x: from_union([lambda x: to_class(CoreLossesMethodData, x), lambda x: from_list(lambda x: to_class(VolumetricLossesPoint, x), x)], x), x), self.volumetricLosses)
+        if self.alternatives is not None:
+            result["alternatives"] = from_union([lambda x: from_list(from_str, x), from_none], self.alternatives)
+        if self.application is not None:
+            result["application"] = from_union([lambda x: to_enum(Application, x), from_none], self.application)
         if self.bhCycle is not None:
             result["bhCycle"] = from_union([lambda x: from_list(lambda x: to_class(SaturationElement, x), x), from_none], self.bhCycle)
         if self.coerciveForce is not None:
@@ -3742,6 +4690,24 @@ class MagneticCore:
 
 @dataclass
 class MagneticManufacturerRecommendations:
+    dimensions: Optional[List[float]] = None
+    """Dimensions of the magnetic according to manufacturer"""
+
+    hipotTest: Optional[float] = None
+    """Hipot test according to manufacturer"""
+
+    insulationType: Optional[InsulationType] = None
+    """Insulation grade according to manufacturer"""
+
+    leakageInductance: Optional[DimensionWithTolerance] = None
+    """Leakage Inductance of the magnetic according to manufacturer"""
+
+    maximumStorableMagneticEnergy: Optional[float] = None
+    """Maximum magnetic energy that can be stored according to manufacturer"""
+
+    mounting: Optional[ConnectionType] = None
+    """Recommended way of mounting according to manufacturer"""
+
     ratedCurrent: Optional[float] = None
     """The manufacturer's rated current for this part"""
 
@@ -3760,15 +4726,33 @@ class MagneticManufacturerRecommendations:
     @staticmethod
     def from_dict(obj: Any) -> 'MagneticManufacturerRecommendations':
         assert isinstance(obj, dict)
+        dimensions = from_union([lambda x: from_list(from_float, x), from_none], obj.get("dimensions"))
+        hipotTest = from_union([from_float, from_none], obj.get("hipotTest"))
+        insulationType = from_union([InsulationType, from_none], obj.get("insulationType"))
+        leakageInductance = from_union([DimensionWithTolerance.from_dict, from_none], obj.get("leakageInductance"))
+        maximumStorableMagneticEnergy = from_union([from_float, from_none], obj.get("maximumStorableMagneticEnergy"))
+        mounting = from_union([ConnectionType, from_none], obj.get("mounting"))
         ratedCurrent = from_union([from_float, from_none], obj.get("ratedCurrent"))
         ratedCurrentTemperatureRise = from_union([from_float, from_none], obj.get("ratedCurrentTemperatureRise"))
         ratedMagneticFlux = from_union([from_float, from_none], obj.get("ratedMagneticFlux"))
         saturationCurrent = from_union([from_float, from_none], obj.get("saturationCurrent"))
         saturationCurrentInductanceDrop = from_union([from_float, from_none], obj.get("saturationCurrentInductanceDrop"))
-        return MagneticManufacturerRecommendations(ratedCurrent, ratedCurrentTemperatureRise, ratedMagneticFlux, saturationCurrent, saturationCurrentInductanceDrop)
+        return MagneticManufacturerRecommendations(dimensions, hipotTest, insulationType, leakageInductance, maximumStorableMagneticEnergy, mounting, ratedCurrent, ratedCurrentTemperatureRise, ratedMagneticFlux, saturationCurrent, saturationCurrentInductanceDrop)
 
     def to_dict(self) -> dict:
         result: dict = {}
+        if self.dimensions is not None:
+            result["dimensions"] = from_union([lambda x: from_list(to_float, x), from_none], self.dimensions)
+        if self.hipotTest is not None:
+            result["hipotTest"] = from_union([to_float, from_none], self.hipotTest)
+        if self.insulationType is not None:
+            result["insulationType"] = from_union([lambda x: to_enum(InsulationType, x), from_none], self.insulationType)
+        if self.leakageInductance is not None:
+            result["leakageInductance"] = from_union([lambda x: to_class(DimensionWithTolerance, x), from_none], self.leakageInductance)
+        if self.maximumStorableMagneticEnergy is not None:
+            result["maximumStorableMagneticEnergy"] = from_union([to_float, from_none], self.maximumStorableMagneticEnergy)
+        if self.mounting is not None:
+            result["mounting"] = from_union([lambda x: to_enum(ConnectionType, x), from_none], self.mounting)
         if self.ratedCurrent is not None:
             result["ratedCurrent"] = from_union([to_float, from_none], self.ratedCurrent)
         if self.ratedCurrentTemperatureRise is not None:

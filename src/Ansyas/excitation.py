@@ -161,7 +161,8 @@ class Excitation:
                 current_rms_per_parallel = operating_point.excitationsPerWinding[winding_index].current.processed.rms / coil.functionalDescription[winding_index].numberParallels
                 voltage_rms = operating_point.excitationsPerWinding[winding_index].voltage.processed.rms
                 if winding_index == 0:
-                    current_per_parallel += magnetizing_current_peak
+                    if len(coil.functionalDescription) > 1:
+                        current_per_parallel += magnetizing_current_peak / coil.functionalDescription[winding_index].numberParallels
                 else:
                     current_per_parallel = -current_per_parallel
 

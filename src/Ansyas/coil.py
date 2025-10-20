@@ -109,7 +109,7 @@ class Coil:
             else:
                 return wire_minus_insulation_radius
         else:
-            if wire.type is MAS.WireType.rectangular or wire.type is MAS.WireType.foil:
+            if wire.type is MAS.WireType.rectangular or wire.type is MAS.WireType.foil or wire.type is MAS.WireType.planar:
                 wire_minus_insulation_width = ansyas_utils.resolve_dimensional_values(wire.conductingWidth)
                 wire_minus_insulation_height = ansyas_utils.resolve_dimensional_values(wire.conductingHeight)
                 outer_width = ansyas_utils.resolve_dimensional_values(wire.outerWidth)
