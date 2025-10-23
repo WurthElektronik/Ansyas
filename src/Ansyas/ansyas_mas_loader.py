@@ -59,6 +59,6 @@ if __name__ == "__main__":
     ansyas.set_units("meter")
     ansyas.create_magnetic_simulation(
         mas=mas,
-        simulate=True,
+        simulate=False,
         operating_point_index=operating_point_index
     )

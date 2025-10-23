@@ -49,6 +49,8 @@ async def create_simulation_from_mas(request: Request):
         "scale": 1,
     }
 
+    return "Mierda"
+
     if "operating_point_index" in json:
         operating_point_index = int(json["operating_point_index"])
 

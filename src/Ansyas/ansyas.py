@@ -130,6 +130,8 @@ class Ansyas:
         if not os.path.exists(self.project_path):
             os.makedirs(self.project_path)
 
+        self.project_name = f"{self.project_path}/{self.project_name}"
+
         if self.solution_type == "SteadyState":
             self.project = pyaedt.Icepak(
                 project=self.project_name,
@@ -456,4 +458,6 @@ class Ansyas:
         if simulate:
             self.analyze()
             self.outputs_extractor.get_results()
-            self.project.release_desktop(close_projects=False, close_desktop=False)
+
+        self.save()
+        self.project.release_desktop(close_projects=False, close_desktop=False)
