@@ -46,6 +46,7 @@ class Ansyas:
         self.project.analyze()
 
     def save(self):
+        self.project.oeditor.CleanUpModel()
         self.project.save_project()
 
     def set_units(self, units):
@@ -158,6 +159,9 @@ class Ansyas:
         self.project.autosave_disable()
 
         return self.project
+
+    def get_project_location(self):
+        return self.project_name
 
     def move(self, object3D: Object3d, vector: typing.List[float]):
         if isinstance(object3D, list):

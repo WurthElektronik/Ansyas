@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse
 import base64
 import sys
 import os
@@ -33,7 +34,6 @@ async def root():
 @app.post("/create_simulation_from_mas", include_in_schema=False)
 async def create_simulation_from_mas(request: Request):
     json = await request.json()
-    pprint.pprint(json)
 
     mas = json["mas"]
     mas = mas_autocomplete.autocomplete(mas)
@@ -49,8 +49,6 @@ async def create_simulation_from_mas(request: Request):
         "scale": 1,
     }
 
-    return "Mierda"
-
     if "operating_point_index" in json:
         operating_point_index = int(json["operating_point_index"])
 
@@ -61,7 +59,7 @@ async def create_simulation_from_mas(request: Request):
         solution_type = json["solution_type"]
 
     if "project_name" in json:
-        project_name = json["project_name"]
+        project_name = json["project_name"] + f"_{time.time()}"
 
     ansyas = Ansyas(**configuration)
 
@@ -69,7 +67,7 @@ async def create_simulation_from_mas(request: Request):
         outputs_folder=outputs_folder,
         project_name=project_name,
         # specified_version="2023.2",
-        non_graphical=True,
+        non_graphical=False,
         solution_type=solution_type,
         new_desktop_session=False
     )
@@ -79,14 +77,11 @@ async def create_simulation_from_mas(request: Request):
         simulate=False,
         operating_point_index=operating_point_index
     )
-    ansyas.save()
 
-    output_project_path = project.project_path + project.project_name + ".aedt"
+    print(ansyas.get_project_location())
+    output_project_path = ansyas.get_project_location()
 
     if output_project_path is None:
         raise HTTPException(status_code=418, detail="Wrong dimensions")
     else:
-        with open(output_project_path, "rb") as aedt:
-            aedt_data = aedt.read()
-            json_compatible_item_data = jsonable_encoder(aedt_data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode('utf-8')})
-            return json_compatible_item_data
+        return FileResponse(output_project_path)
