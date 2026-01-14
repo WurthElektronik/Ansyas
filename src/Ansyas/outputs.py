@@ -41,11 +41,13 @@ class Outputs:
             for expression_index, expression in enumerate(available_report_quantities):
                 horizontal_winding_index = int(math.floor(expression_index / number_windings))
                 vertical_winding_index = expression_index % number_windings
-                data_per_frequency = data.data_magnitude(expression=expression, convert_to_SI=True)
+                # PyAEDT 0.24+ uses get_expression_data instead of data_magnitude
+                _, data_per_frequency = data.get_expression_data(expression=expression, formula="mag", convert_to_SI=True)
                 for frequency_index, datum in enumerate(data_per_frequency):
                     category_data[frequency_index]["magnitude"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
                 if include_phase:
-                    data_per_frequency = data.data_phase(expression=expression)
+                    # PyAEDT 0.24+ uses get_expression_data instead of data_phase
+                    _, data_per_frequency = data.get_expression_data(expression=expression, formula="phasedeg")
                     for frequency_index, datum in enumerate(data_per_frequency):
                         category_data[frequency_index]["phase"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
 

@@ -62,3 +62,4 @@ if __name__ == "__main__":
         simulate=False,
         operating_point_index=operating_point_index
     )
+    project.release_desktop(close_projects=False, close_desktop=False)

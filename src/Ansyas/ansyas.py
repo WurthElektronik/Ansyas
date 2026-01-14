@@ -138,7 +138,7 @@ class Ansyas:
                 project=self.project_name,
                 solution_type="SteadyState",
                 non_graphical=non_graphical,
-                specified_version=specified_version,
+                version=specified_version,
                 new_desktop=new_desktop_session,
                 close_on_exit=False
             )
@@ -148,13 +148,14 @@ class Ansyas:
                 project=self.project_name,
                 solution_type=solution_type,
                 non_graphical=non_graphical,
-                specified_version=specified_version,
+                version=specified_version,
                 new_desktop=new_desktop_session,
                 close_on_exit=False
             )
             self.project.change_design_settings({"ComputeTransientCapacitance": True})
             self.project.change_design_settings({"ComputeTransientInductance": True})
-            self.project.mesh.assign_initial_mesh_from_slider(self.initial_mesh_configuration, curvilinear=True)
+            if hasattr(self.project, '_mesh'):
+                self.project.mesh.assign_initial_mesh_from_slider(self.initial_mesh_configuration, curvilinear=True)
 
         self.project.autosave_disable()
 
@@ -464,4 +465,3 @@ class Ansyas:
             self.outputs_extractor.get_results()
 
         self.save()
-        self.project.release_desktop(close_projects=False, close_desktop=False)

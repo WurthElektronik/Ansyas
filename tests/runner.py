@@ -3,6 +3,8 @@ import os
 import json
 import glob
 import time
+import shutil
+import subprocess
 
 import context  # noqa: F401
 import mas_autocomplete
@@ -17,12 +19,41 @@ class EddyCurrent(unittest.TestCase):
 
         files = glob.glob(f"{cls.output_path}/*")
         for f in files:
-            os.remove(f)
+            if os.path.isdir(f):
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                try:
+                    os.remove(f)
+                except PermissionError:
+                    pass
         print("Starting tests for builder")
 
     @classmethod
     def tearDownClass(cls):
         print("\nFinishing tests for builder")
+
+    def setUp(self):
+        # Kill any lingering AEDT processes and wait for clean slate
+        # subprocess.run(
+        #     ["powershell", "-Command", "Stop-Process -Name ansysedtsv -Force -ErrorAction SilentlyContinue"],
+        #     capture_output=True
+        # )
+        # time.sleep(1)  # Wait for AEDT to fully release
+        self._project = None  # Track project for cleanup
+
+    def tearDown(self):
+        # Ensure AEDT is released even if test fails
+        if self._project is not None:
+            try:
+                self._project.release_desktop(close_projects=True, close_desktop=True)
+            except Exception:
+                pass
+        # # Force kill any remaining AEDT process
+        # subprocess.run(
+        #     ["powershell", "-Command", "Stop-Process -Name ansysedtsv -Force -ErrorAction SilentlyContinue"],
+        #     capture_output=True
+        # )
+        # time.sleep(1)
 
     def test_simple_inductor_rectangular_column(self):
         with open(f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/simple_inductor_rectangular_column.json', 'r') as f:
@@ -31,12 +62,12 @@ class EddyCurrent(unittest.TestCase):
 
             ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=20, refinement_percent=5, maximum_passes=100, scale=1)
 
-            project = ansyas.create_project(
+            self._project = ansyas.create_project(
                 outputs_folder=self.output_path,
                 project_name=f"test_simple_inductor_rectangular_column_{time.time()}",
-                non_graphical=False,
+                non_graphical=True,
                 solution_type="EddyCurrent",
-                new_desktop_session=False
+                new_desktop_session=True
             )
             
             ansyas.set_units("meter")
@@ -49,7 +80,6 @@ class EddyCurrent(unittest.TestCase):
             magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
             print(magnetizing_inductance)
             self.assertAlmostEqual(magnetizing_inductance, expected_magnetizing_inductance)
-            project.release_desktop(close_projects=False, close_desktop=False)
 
     def test_simple_inductor_rectangular_column_stacked(self):
         with open(f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/simple_inductor_rectangular_column_stacked.json', 'r') as f:
@@ -58,12 +88,12 @@ class EddyCurrent(unittest.TestCase):
 
             ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=20, refinement_percent=5, maximum_passes=100, scale=1)
 
-            project = ansyas.create_project(
+            self._project = ansyas.create_project(
                 outputs_folder=self.output_path,
                 project_name=f"test_simple_inductor_rectangular_column_stacked_{time.time()}",
-                non_graphical=False,
+                non_graphical=True,
                 solution_type="EddyCurrent",
-                new_desktop_session=False
+                new_desktop_session=True
             )
             
             ansyas.set_units("meter")
@@ -76,7 +106,6 @@ class EddyCurrent(unittest.TestCase):
             magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
             print(magnetizing_inductance)
             self.assertAlmostEqual(magnetizing_inductance, expected_magnetizing_inductance)
-            project.release_desktop(close_projects=False, close_desktop=False)
 
     def test_simple_inductor_rectangular_column_toroidal(self):
         with open(f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/simple_inductor_rectangular_column_toroidal.json', 'r') as f:
@@ -85,12 +114,12 @@ class EddyCurrent(unittest.TestCase):
 
             ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=20, refinement_percent=5, maximum_passes=100, scale=1)
 
-            project = ansyas.create_project(
+            self._project = ansyas.create_project(
                 outputs_folder=self.output_path,
                 project_name=f"test_simple_inductor_rectangular_column_toroidal_{time.time()}",
-                non_graphical=False,
+                non_graphical=True,
                 solution_type="EddyCurrent",
-                new_desktop_session=False
+                new_desktop_session=True
             )
             
             ansyas.set_units("meter")
@@ -103,7 +132,6 @@ class EddyCurrent(unittest.TestCase):
             magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
             print(magnetizing_inductance)
             self.assertAlmostEqual(magnetizing_inductance, expected_magnetizing_inductance, places=4)
-            project.release_desktop(close_projects=False, close_desktop=False)
 
     def test_simple_inductor_round_column(self):
         with open(f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/simple_inductor_round_column.json', 'r') as f:
@@ -112,12 +140,12 @@ class EddyCurrent(unittest.TestCase):
 
             ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=20, refinement_percent=5, maximum_passes=100, scale=1)
 
-            project = ansyas.create_project(
+            self._project = ansyas.create_project(
                 outputs_folder=self.output_path,
-                project_name=f"test_simple_inductor_rectangular_column_{time.time()}",
-                non_graphical=False,
+                project_name=f"test_simple_inductor_round_column_{time.time()}",
+                non_graphical=True,
                 solution_type="EddyCurrent",
-                new_desktop_session=False
+                new_desktop_session=True
             )
             
             ansyas.set_units("meter")
@@ -130,21 +158,25 @@ class EddyCurrent(unittest.TestCase):
             magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
             print(magnetizing_inductance)
             self.assertAlmostEqual(magnetizing_inductance, expected_magnetizing_inductance)
-            project.release_desktop(close_projects=False, close_desktop=False)
 
     def test_cmc(self):
         with open(f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/cmc.json', 'r') as f:
+            with open(f'{os.path.dirname(os.path.abspath(__file__))}/../external_data/core_materials.ndjson', 'r') as material_file:
+                material_data = material_file.read()
+                import PyMKF
+                PyMKF.load_core_materials(material_data)
+
             mas_dict = json.load(f)
             mas = mas_autocomplete.autocomplete(mas_dict)
 
             ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=20, refinement_percent=5, maximum_passes=100, scale=1)
 
-            project = ansyas.create_project(
+            self._project = ansyas.create_project(
                 outputs_folder=self.output_path,
-                project_name=f"test_simple_inductor_rectangular_column_{time.time()}",
+                project_name=f"test_cmc_{time.time()}",
                 non_graphical=False,
                 solution_type="EddyCurrent",
-                new_desktop_session=False
+                new_desktop_session=True
             )
             
             ansyas.set_units("meter")
@@ -157,7 +189,6 @@ class EddyCurrent(unittest.TestCase):
             impedance_value = impedance.impedanceMatrix[0].magnitude[0][0].nominal
             print(impedance_value)
             self.assertAlmostEqual(impedance_value, expected_impedance, 0)
-            project.release_desktop(close_projects=False, close_desktop=False)
 
 
 if __name__ == '__main__':  # pragma: no cover
