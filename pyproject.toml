@@ -39,3 +39,20 @@ packages = ["src/Ansyas"]
 Homepage = "https://we-online.com"
 Repository = "https://github.com/WurthElektronik/Ansyas"
 Contact = "https://www.linkedin.com/in/alfonso-martinez-de-la-torre/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration tests (require external resources)",
+    "ansys: marks tests that require Ansys AEDT license",
+    "slow: marks tests as slow running",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:defusedxml.*:",
+    "ignore::DeprecationWarning:ansys.aedt.core.emit_core.*:",
+    "ignore::DeprecationWarning:cadquery.*:",
+    "ignore::DeprecationWarning:ezdxf.*:",
+]

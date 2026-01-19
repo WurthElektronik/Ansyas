@@ -40,8 +40,9 @@ if __name__ == "__main__":
     else:
         try:
             project_name = f"{mas_dict['magnetic']['manufacturerInfo']['reference']}_{time.time()}"
-        except TypeError:
-            project_name = f"Unnamed_design_{time.time()}"
+        except (TypeError, KeyError):
+            base_name = os.path.splitext(os.path.basename(sys.argv[1]))[0]
+            project_name = f"{base_name}_{time.time()}"
 
     print("outputs_folder")
     print(outputs_folder)

@@ -13,7 +13,7 @@ class Coil:
         self.number_segments_arcs_corners = int(number_segments_arcs / 4)
         self.project = project
         self.add_insulation = add_insulation
-        self.terminals_plane = pyaedt.constants.PLANE.YZ
+        self.terminals_plane = pyaedt.constants.Plane.YZ
 
     def add_coil_terminals_to_turn(self, turn_object: Object3d, is_input: bool = True, swap_direction: bool = False):
         turn_object.section(
@@ -257,7 +257,7 @@ class ConcentricCoil(Coil):
                     return None
                     
                 turn_width_half_side_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.YZ,
+                    orientation=pyaedt.constants.Plane.YZ,
                     origin=converted_turn_coordinates,
                     radius=wire_object_radius,
                     num_sides=self.number_segments_arcs,
@@ -278,7 +278,7 @@ class ConcentricCoil(Coil):
                 origin[2] -= wire_object_height / 2
                     
                 turn_width_half_side_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.YZ,
+                    orientation=pyaedt.constants.Plane.YZ,
                     origin=origin,
                     sizes=[wire_object_width, wire_object_height],
                     num_sides=self.number_segments_arcs,
@@ -303,7 +303,7 @@ class ConcentricCoil(Coil):
             while not result:
                 if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
                     turn_corner_circle = self.project.modeler.create_circle(
-                        orientation=pyaedt.constants.PLANE.YZ,
+                        orientation=pyaedt.constants.Plane.YZ,
                         origin=[0, turn_turn_radius, 0],
                         radius=wire_object_radius,
                         num_sides=self.number_segments_arcs,
@@ -316,7 +316,7 @@ class ConcentricCoil(Coil):
                     origin = [0, turn_turn_radius - wire_object_width / 2, -wire_object_height / 2]
                         
                     turn_corner_circle = self.project.modeler.create_rectangle(
-                        orientation=pyaedt.constants.PLANE.YZ,
+                        orientation=pyaedt.constants.Plane.YZ,
                         origin=origin,
                         sizes=[wire_object_width, wire_object_height],
                         is_covered=True,
@@ -327,7 +327,7 @@ class ConcentricCoil(Coil):
 
                 turn_corner = self.project.modeler.sweep_around_axis(
                     assignment=turn_corner_circle,
-                    axis=pyaedt.constants.AXIS.Z,
+                    axis=pyaedt.constants.Axis.Z,
                     sweep_angle=-90,
                     draft_angle=0,
                     number_of_segments=self.number_segments_arcs_corners
@@ -380,7 +380,7 @@ class ConcentricCoil(Coil):
                 name = f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}"
 
                 turn_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.YZ,
+                    orientation=pyaedt.constants.Plane.YZ,
                     origin=ansyas_utils.convert_axis(turn.coordinates),
                     radius=wire_object_radius,
                     num_sides=self.number_segments_arcs,
@@ -399,7 +399,7 @@ class ConcentricCoil(Coil):
                 origin[1] -= wire_object_width / 2
                 origin[2] -= wire_object_height / 2
                 turn_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.YZ,
+                    orientation=pyaedt.constants.Plane.YZ,
                     origin=origin,
                     sizes=[wire_object_width, wire_object_height],
                     is_covered=True,
@@ -410,7 +410,7 @@ class ConcentricCoil(Coil):
 
             turn_object = self.project.modeler.sweep_around_axis(
                 assignment=turn_section,
-                axis=pyaedt.constants.AXIS.Z,
+                axis=pyaedt.constants.Axis.Z,
                 sweep_angle=360,
                 draft_angle=0,
                 number_of_segments=self.number_segments_arcs
@@ -460,7 +460,7 @@ class ConcentricCoil(Coil):
             origin[2] -= layer_object_height / 2
                 
             layer_width_half_side_section = self.project.modeler.create_rectangle(
-                orientation=pyaedt.constants.PLANE.YZ,
+                orientation=pyaedt.constants.Plane.YZ,
                 origin=origin,
                 sizes=[layer_object_width, layer_object_height],
                 is_covered=True,
@@ -487,7 +487,7 @@ class ConcentricCoil(Coil):
                 origin = [0, layer_layer_radius - wire_object_width / 2, -wire_object_height / 2]
                     
                 layer_corner_circle = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.YZ,
+                    orientation=pyaedt.constants.Plane.YZ,
                     origin=origin,
                     sizes=[wire_object_width, wire_object_height],
                     is_covered=True,
@@ -498,7 +498,7 @@ class ConcentricCoil(Coil):
 
                 layer_corner = self.project.modeler.sweep_around_axis(
                     assignment=layer_corner_circle,
-                    axis=pyaedt.constants.AXIS.Z,
+                    axis=pyaedt.constants.Axis.Z,
                     sweep_angle=-90,
                     draft_angle=0,
                     number_of_segments=self.number_segments_arcs_corners
@@ -552,7 +552,7 @@ class ConcentricCoil(Coil):
             origin[1] -= layer_object_width / 2
             origin[2] -= layer_object_height / 2
             layer_section = self.project.modeler.create_rectangle(
-                orientation=pyaedt.constants.PLANE.YZ,
+                orientation=pyaedt.constants.Plane.YZ,
                 origin=origin,
                 sizes=[layer_object_width, layer_object_height],
                 is_covered=True,
@@ -563,7 +563,7 @@ class ConcentricCoil(Coil):
 
             layer_object = self.project.modeler.sweep_around_axis(
                 assignment=layer_section,
-                axis=pyaedt.constants.AXIS.Z,
+                axis=pyaedt.constants.Axis.Z,
                 sweep_angle=360,
                 draft_angle=0,
                 number_of_segments=self.number_segments_arcs
@@ -587,7 +587,7 @@ class ToroidalCoil(Coil):
             add_insulation=add_insulation
         )
 
-        self.terminals_plane = pyaedt.constants.PLANE.XY
+        self.terminals_plane = pyaedt.constants.Plane.XY
 
     def create_coil(self, coil: MAS.Coil):
         turns_and_terminals = []
@@ -623,13 +623,13 @@ class ToroidalCoil(Coil):
                     turn = prev_turn.clone()
                     polar_coordinates = ansyas_utils.cartesian_to_polar(turn_data.coordinates, coil.bobbin.processedDescription.windingWindows[0].radialHeight)
                     rotation = polar_coordinates[1] - prev_turn_polar_coordinates[1]
-                    turn.rotate(pyaedt.constants.AXIS.Z, rotation)
+                    turn.rotate(pyaedt.constants.Axis.Z, rotation)
 
                     # turn.move([coordinates[0] - prev_turn_coordinates[0], coordinates[1] - prev_turn_coordinates[1], coordinates[2] - prev_turn_coordinates[2]])
                     turn.name = f"{ansyas_utils.clean_name(turn_data.name)}_copper"
                     if prev_turn_insulation is not None:
                         turn_insulation = prev_turn_insulation.clone()
-                        turn_insulation.rotate(pyaedt.constants.AXIS.Z, rotation)
+                        turn_insulation.rotate(pyaedt.constants.Axis.Z, rotation)
                         # turn_insulation.move([coordinates[0] - prev_turn_coordinates[0], coordinates[1] - prev_turn_coordinates[1], coordinates[2] - prev_turn_coordinates[2]])
                         turn_insulation.name = f"{ansyas_utils.clean_name(turn_data.name)}_insulation"
                     cloned = True
@@ -676,7 +676,7 @@ class ToroidalCoil(Coil):
                 wire_turn_center_height = wire_object_radius
 
                 turn_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.XY,
+                    orientation=pyaedt.constants.Plane.XY,
                     origin=converted_turn_coordinates,
                     radius=wire_object_radius,
                     num_sides=self.number_segments_arcs,
@@ -690,7 +690,7 @@ class ToroidalCoil(Coil):
                     raise RuntimeError("Turn is missing additional coordinates")
 
                 additional_turn_section = self.project.modeler.create_circle(
-                    orientation=pyaedt.constants.PLANE.XY,
+                    orientation=pyaedt.constants.Plane.XY,
                     origin=ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0]),
                     radius=wire_object_radius,
                     num_sides=self.number_segments_arcs,
@@ -713,7 +713,7 @@ class ToroidalCoil(Coil):
                 origin[0] -= wire_object_height / 2
                 origin[1] -= wire_object_width / 2
                 turn_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.XY,
+                    orientation=pyaedt.constants.Plane.XY,
                     origin=origin,
                     sizes=[wire_object_height, wire_object_width],
                     is_covered=True,
@@ -729,7 +729,7 @@ class ToroidalCoil(Coil):
                 origin[0] -= wire_object_height / 2
                 origin[1] -= wire_object_width / 2
                 additional_turn_section = self.project.modeler.create_rectangle(
-                    orientation=pyaedt.constants.PLANE.XY,
+                    orientation=pyaedt.constants.Plane.XY,
                     origin=origin,
                     sizes=[wire_object_height, wire_object_width],
                     is_covered=True,
@@ -758,11 +758,11 @@ class ToroidalCoil(Coil):
 
             real_turn_rotation = 180.0 / math.pi * math.atan2((turn.additionalCoordinates[0][1] - turn.coordinates[1]), (turn.additionalCoordinates[0][0] - turn.coordinates[0]))
             turn_object.move([-x for x in ansyas_utils.convert_axis_toroidal_core(turn.coordinates)])
-            turn_object.rotate(pyaedt.constants.AXIS.Z, real_turn_rotation)
+            turn_object.rotate(pyaedt.constants.Axis.Z, real_turn_rotation)
             turn_object.move(ansyas_utils.convert_axis_toroidal_core(turn.coordinates))
 
             additional_turn_object.move([-x for x in ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0])])
-            additional_turn_object.rotate(pyaedt.constants.AXIS.Z, real_turn_rotation)
+            additional_turn_object.rotate(pyaedt.constants.Axis.Z, real_turn_rotation)
             additional_turn_object.move(ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0]))
             center_point_aprox = [(converted_turn_coordinates[0] + converted_additional_turn_coordinates[0]) / 2,
                                   (converted_turn_coordinates[1] + converted_additional_turn_coordinates[1]) / 2,
@@ -773,7 +773,7 @@ class ToroidalCoil(Coil):
 
                 if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
                     turn_top_internal_corner = self.project.modeler.create_circle(
-                        orientation=pyaedt.constants.PLANE.XY,
+                        orientation=pyaedt.constants.Plane.XY,
                         origin=[0, -turn_radial_height, 0],
                         radius=wire_object_radius,
                         num_sides=self.number_segments_arcs,
@@ -785,7 +785,7 @@ class ToroidalCoil(Coil):
                 else:
                     origin = [-wire_object_height / 2, -(turn_radial_height + wire_object_width / 2), 0]
                     turn_top_internal_corner = self.project.modeler.create_rectangle(
-                        orientation=pyaedt.constants.PLANE.XY,
+                        orientation=pyaedt.constants.Plane.XY,
                         origin=origin,
                         sizes=[wire_object_height, wire_object_width],
                         is_covered=True,
@@ -796,7 +796,7 @@ class ToroidalCoil(Coil):
 
                 turn_top_internal_corner = self.project.modeler.sweep_around_axis(
                     assignment=turn_top_internal_corner,
-                    axis=pyaedt.constants.AXIS.X,
+                    axis=pyaedt.constants.Axis.X,
                     sweep_angle=-90,
                     draft_angle=0,
                     number_of_segments=self.number_segments_arcs_corners
@@ -812,7 +812,7 @@ class ToroidalCoil(Coil):
                 else:
                     turn_internal_face = turn_top_internal_corner.faces[1]
 
-                    turn_top_internal_corner.rotate(pyaedt.constants.AXIS.Z, real_turn_rotation)
+                    turn_top_internal_corner.rotate(pyaedt.constants.Axis.Z, real_turn_rotation)
                     turn_top_internal_corner.move(ansyas_utils.convert_axis_toroidal_core(turn.coordinates))
                     turn_internal_face = ansyas_utils.get_closest_face(turn_top_internal_corner, center_point_aprox)
 
@@ -821,7 +821,7 @@ class ToroidalCoil(Coil):
 
                 if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
                     turn_top_external_corner = self.project.modeler.create_circle(
-                        orientation=pyaedt.constants.PLANE.XY,
+                        orientation=pyaedt.constants.Plane.XY,
                         origin=[0, -additional_turn_radial_height, 0],
                         radius=wire_object_radius,
                         num_sides=self.number_segments_arcs,
@@ -833,7 +833,7 @@ class ToroidalCoil(Coil):
                 else:
                     origin = [-wire_object_height / 2, -(additional_turn_radial_height + wire_object_width / 2), 0]
                     turn_top_external_corner = self.project.modeler.create_rectangle(
-                        orientation=pyaedt.constants.PLANE.XY,
+                        orientation=pyaedt.constants.Plane.XY,
                         origin=origin,
                         sizes=[wire_object_height, wire_object_width],
                         is_covered=True,
@@ -844,7 +844,7 @@ class ToroidalCoil(Coil):
 
                 turn_top_external_corner = self.project.modeler.sweep_around_axis(
                     assignment=turn_top_external_corner,
-                    axis=pyaedt.constants.AXIS.X,
+                    axis=pyaedt.constants.Axis.X,
                     sweep_angle=-90,
                     draft_angle=0,
                     number_of_segments=self.number_segments_arcs_corners
@@ -861,8 +861,8 @@ class ToroidalCoil(Coil):
                 else:
                     additional_turn_internal_face = turn_top_external_corner.faces[1]
 
-                    turn_top_external_corner.rotate(pyaedt.constants.AXIS.Z, 180)
-                    turn_top_external_corner.rotate(pyaedt.constants.AXIS.Z, real_turn_rotation)
+                    turn_top_external_corner.rotate(pyaedt.constants.Axis.Z, 180)
+                    turn_top_external_corner.rotate(pyaedt.constants.Axis.Z, real_turn_rotation)
                     turn_top_external_corner.move(ansyas_utils.convert_axis_toroidal_core(turn.additionalCoordinates[0]))
                     additional_turn_internal_face = ansyas_utils.get_closest_face(turn_top_external_corner, center_point_aprox)
 

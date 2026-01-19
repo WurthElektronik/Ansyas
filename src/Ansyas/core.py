@@ -196,10 +196,10 @@ class Core:
 
         if core.functionalDescription.type == MAS.CoreType.toroidal:
             for core_part in core_parts:
-                core_part.rotate(pyaedt.constants.AXIS.X, 90)
+                core_part.rotate(pyaedt.constants.Axis.X, 90)
         else:
             for core_part in core_parts:
-                core_part.rotate(pyaedt.constants.AXIS.Z, 90)
+                core_part.rotate(pyaedt.constants.Axis.Z, 90)
 
         return core_parts
 

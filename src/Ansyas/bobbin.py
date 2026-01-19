@@ -1,6 +1,6 @@
-import pyaedt
 import ansyas_utils
 import MAS_models as MAS
+from ansys.aedt.core import constants as pyaedt_constants
 
 
 class Bobbin:
@@ -53,7 +53,7 @@ class Bobbin:
         total_depth = bobbinData.windingWindows[0].width + bobbinData.columnDepth
         if bobbinData.columnShape is MAS.ColumnShape.round:
             bobbin = self.project.modeler.create_cylinder(
-                orientation=pyaedt.constants.AXIS.Z,
+                orientation=pyaedt_constants.Axis.Z,
                 origin=[0, 0, -total_height / 2],
                 radius=total_width,
                 height=total_height,
@@ -62,7 +62,7 @@ class Bobbin:
                 material=material
             )
             negative_winding_window = self.project.modeler.create_cylinder(
-                orientation=pyaedt.constants.AXIS.Z,
+                orientation=pyaedt_constants.Axis.Z,
                 origin=[0, 0, -bobbinData.windingWindows[0].height / 2],
                 radius=total_width,
                 height=bobbinData.windingWindows[0].height,
@@ -71,7 +71,7 @@ class Bobbin:
                 material=material
             )
             central_column = self.project.modeler.create_cylinder(
-                orientation=pyaedt.constants.AXIS.Z,
+                orientation=pyaedt_constants.Axis.Z,
                 origin=[0, 0, -bobbinData.windingWindows[0].height / 2],
                 radius=bobbinData.columnWidth,
                 height=bobbinData.windingWindows[0].height,
@@ -80,7 +80,7 @@ class Bobbin:
                 material=material
             )
             central_hole = self.project.modeler.create_cylinder(
-                orientation=pyaedt.constants.AXIS.Z,
+                orientation=pyaedt_constants.Axis.Z,
                 origin=[0, 0, -total_height / 2],
                 radius=bobbinData.columnWidth - bobbinData.columnThickness,
                 height=total_height,
