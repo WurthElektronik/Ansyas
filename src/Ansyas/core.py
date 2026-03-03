@@ -1,10 +1,17 @@
 from typing import Optional
-import pyaedt
-import ansyas_utils
+try:
+    import ansys.aedt.core as pyaedt
+except ImportError:
+    import pyaedt
+try:
+    from . import ansyas_utils
+    from . import MAS_models as MAS
+except ImportError:
+    import ansyas_utils
+    import MAS_models as MAS
 import math
 import os
 from OpenMagneticsVirtualBuilder.builder import Builder as ShapeBuilder  # noqa: E402
-import MAS_models as MAS
 
 
 class Core:

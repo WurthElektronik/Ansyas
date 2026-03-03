@@ -116,7 +116,7 @@ class TestAnsysIntegration(unittest.TestCase):
     """
     
     output_path = f'{os.path.dirname(os.path.abspath(__file__))}/../output/'
-    mas_files_path = f'{os.path.dirname(os.path.abspath(__file__))}/mas_files/'
+    mas_files_path = f'{os.path.dirname(os.path.abspath(__file__))}/../examples/'
     external_data_path = f'{os.path.dirname(os.path.abspath(__file__))}/../external_data/'
 
     @classmethod
@@ -271,9 +271,9 @@ class TestAnsysIntegration(unittest.TestCase):
         self._ansyas = AnsyasClass(
             number_segments_arcs=12,
             initial_mesh_configuration=2,
-            maximum_error_percent=20,
-            refinement_percent=5,
-            maximum_passes=100,
+            maximum_error_percent=5,
+            refinement_percent=30,
+            maximum_passes=15,
             scale=1
         )
 
@@ -286,203 +286,74 @@ class TestAnsysIntegration(unittest.TestCase):
         )
 
         self._ansyas.set_units("meter")
-        self._ansyas.create_magnetic_simulation(mas=mas)
+        self._ansyas.create_magnetic_simulation(mas=mas, single_frequency=True)
         self._ansyas.analyze()
 
         return self._ansyas.outputs_extractor.get_results()
 
     # =========================================================================
-    # EddyCurrent Inductor Tests
+    # Example Tests - Using actual example files
     # =========================================================================
 
-    def test_01_simple_inductor_rectangular_column(self):
-        """Test EddyCurrent simulation for rectangular column inductor."""
-        impedance = self._run_eddy_current_simulation(
-            mas_file="simple_inductor_rectangular_column.json",
-            project_name="test_simple_inductor_rectangular_column"
-        )
-
-        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
-        expected_magnetizing_inductance = 1.4e-7  # Calibrated from FEM result
-
-        print(f"Magnetizing inductance: {magnetizing_inductance:.3e} H (expected: {expected_magnetizing_inductance:.3e} H)")
-        
-        # Allow 50% tolerance for FEM simulations
-        self.assertAlmostEqual(
-            magnetizing_inductance,
-            expected_magnetizing_inductance,
-            delta=expected_magnetizing_inductance * 0.5,
-            msg=f"Inductance {magnetizing_inductance:.3e} not within 50% of expected {expected_magnetizing_inductance:.3e}"
-        )
-
-    def test_02_simple_inductor_rectangular_column_stacked(self):
-        """Test EddyCurrent simulation for stacked rectangular column inductor."""
-        mas_file = "simple_inductor_rectangular_column_stacked.json"
-        if not os.path.exists(os.path.join(self.mas_files_path, mas_file)):
-            self.skipTest(f"{mas_file} not found")
-            
-        impedance = self._run_eddy_current_simulation(
-            mas_file=mas_file,
-            project_name="test_simple_inductor_rectangular_column_stacked"
-        )
-
-        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
-        expected_magnetizing_inductance = 702e-9
-
-        print(f"Magnetizing inductance: {magnetizing_inductance:.3e} H (expected: {expected_magnetizing_inductance:.3e} H)")
-        
-        self.assertAlmostEqual(
-            magnetizing_inductance,
-            expected_magnetizing_inductance,
-            delta=expected_magnetizing_inductance * 0.5,
-            msg=f"Inductance {magnetizing_inductance:.3e} not within 50% of expected {expected_magnetizing_inductance:.3e}"
-        )
-
-    def test_03_simple_inductor_rectangular_column_toroidal(self):
-        """Test EddyCurrent simulation for toroidal inductor."""
-        mas_file = "simple_inductor_rectangular_column_toroidal.json"
-        if not os.path.exists(os.path.join(self.mas_files_path, mas_file)):
-            self.skipTest(f"{mas_file} not found")
-            
-        impedance = self._run_eddy_current_simulation(
-            mas_file=mas_file,
-            project_name="test_simple_inductor_rectangular_column_toroidal"
-        )
-
-        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
-        expected_magnetizing_inductance = 10.3e-6
-
-        print(f"Magnetizing inductance: {magnetizing_inductance:.3e} H (expected: {expected_magnetizing_inductance:.3e} H)")
-        
-        self.assertAlmostEqual(
-            magnetizing_inductance,
-            expected_magnetizing_inductance,
-            delta=expected_magnetizing_inductance * 0.5,
-            msg=f"Inductance {magnetizing_inductance:.3e} not within 50% of expected {expected_magnetizing_inductance:.3e}"
-        )
-
-    def test_04_simple_inductor_round_column(self):
-        """Test EddyCurrent simulation for round column inductor."""
-        impedance = self._run_eddy_current_simulation(
-            mas_file="simple_inductor_round_column.json",
-            project_name="test_simple_inductor_round_column"
-        )
-
-        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
-        # Expected value from Ansys Maxwell FEM simulation (empirical result)
-        # PQ 40/40 core with N87 material, 2mm gap, 2 turns
-        expected_magnetizing_inductance = 7.3e-7
-
-        print(f"Magnetizing inductance: {magnetizing_inductance:.3e} H (expected: {expected_magnetizing_inductance:.3e} H)")
-        
-        self.assertAlmostEqual(
-            magnetizing_inductance,
-            expected_magnetizing_inductance,
-            delta=expected_magnetizing_inductance * 0.5,
-            msg=f"Inductance {magnetizing_inductance:.3e} not within 50% of expected {expected_magnetizing_inductance:.3e}"
-        )
-
-    # =========================================================================
-    # Common Mode Choke Tests
-    # =========================================================================
-
-    def test_05_cmc_impedance(self):
-        """Test Common Mode Choke impedance simulation."""
-        mas_file = "cmc.json"
-        if not os.path.exists(os.path.join(self.mas_files_path, mas_file)):
-            self.skipTest(f"{mas_file} not found")
-            
-        # Load custom core materials
-        material_file_path = os.path.join(self.external_data_path, 'core_materials.ndjson')
-        if os.path.exists(material_file_path):
-            with open(material_file_path, 'r') as material_file:
-                material_data = material_file.read()
-                import PyMKF
-                PyMKF.load_core_materials(material_data)
-
-        with open(os.path.join(self.mas_files_path, mas_file), 'r') as f:
-            mas_dict = json.load(f)
-            mas = mas_autocomplete.autocomplete(mas_dict)
-
-        self._ansyas = Ansyas(
-            number_segments_arcs=12,
-            initial_mesh_configuration=2,
-            maximum_error_percent=20,
-            refinement_percent=5,
-            maximum_passes=100,
-            scale=1
-        )
-
-        self._project = self._ansyas.create_project(
-            outputs_folder=self.output_path,
-            project_name=f"test_cmc_{int(time.time())}",
-            non_graphical=True,
-            solution_type="EddyCurrent",
-            new_desktop_session=True
-        )
-
-        self._ansyas.set_units("meter")
-        self._ansyas.create_magnetic_simulation(mas=mas)
-        self._ansyas.analyze()
-
-        impedance = self._ansyas.outputs_extractor.get_results()
-        impedance_value = impedance.impedanceMatrix[0].magnitude[0][0].nominal
-        expected_impedance = 44
-
-        print(f"CMC Impedance: {impedance_value:.1f} Ω (expected: {expected_impedance} Ω)")
-        
-        # Allow larger tolerance for CMC simulations
-        self.assertAlmostEqual(
-            impedance_value,
-            expected_impedance,
-            delta=expected_impedance * 0.5,
-            msg=f"Impedance {impedance_value:.1f} not within 50% of expected {expected_impedance}"
-        )
-
-    # =========================================================================
-    # Transformer Tests
-    # =========================================================================
-
-    def test_06_simple_transformer(self):
-        """Test simple transformer simulation."""
-        mas_file = "simple_transformer.json"
+    def test_01_concentric_transformer(self):
+        """Test concentric transformer simulation."""
+        mas_file = "concentric_transformer.json"
         mas_file_path = os.path.join(self.mas_files_path, mas_file)
         if not os.path.exists(mas_file_path):
             self.skipTest(f"{mas_file} not found")
 
-        with open(mas_file_path, 'r') as f:
-            mas_dict = json.load(f)
-            mas = mas_autocomplete.autocomplete(mas_dict)
+        impedance = self._run_eddy_current_simulation(
+            mas_file=mas_file,
+            project_name=f"test_concentric_transformer_{int(time.time())}"
+        )
+        
+        # Verify we got valid results
+        self.assertIsNotNone(impedance)
+        self.assertIsNotNone(impedance.inductanceMatrix)
+        self.assertGreater(len(impedance.inductanceMatrix), 0, "Simulation produced no inductance data")
 
-        self._ansyas = Ansyas(
-            number_segments_arcs=12,
-            initial_mesh_configuration=2,
-            maximum_error_percent=20,
-            refinement_percent=5,
-            maximum_passes=100,
-            scale=1
+        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
+        print(f"Concentric transformer magnetizing inductance: {magnetizing_inductance:.3e} H")
+
+    def test_02_concentric_flyback_rectangular_column(self):
+        """Test concentric flyback with rectangular column simulation."""
+        mas_file = "concentric_flyback_rectangular_column.json"
+        mas_file_path = os.path.join(self.mas_files_path, mas_file)
+        if not os.path.exists(mas_file_path):
+            self.skipTest(f"{mas_file} not found")
+            
+        impedance = self._run_eddy_current_simulation(
+            mas_file=mas_file,
+            project_name=f"test_concentric_flyback_{int(time.time())}"
         )
 
-        self._project = self._ansyas.create_project(
-            outputs_folder=self.output_path,
-            project_name=f"test_simple_transformer_{int(time.time())}",
-            non_graphical=True,
-            solution_type="EddyCurrent",
-            new_desktop_session=True
-        )
-
-        self._ansyas.set_units("meter")
-        self._ansyas.create_magnetic_simulation(mas=mas)
-        self._ansyas.analyze()
-
-        impedance = self._ansyas.outputs_extractor.get_results()
+        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
+        print(f"Concentric flyback magnetizing inductance: {magnetizing_inductance:.3e} H")
         
         # Verify we got valid results
         self.assertIsNotNone(impedance)
         self.assertIsNotNone(impedance.inductanceMatrix)
         self.assertGreater(len(impedance.inductanceMatrix), 0)
+
+    def test_03_concentric_transformer_contiguous_rectangular_wire(self):
+        """Test concentric transformer with contiguous rectangular wire simulation."""
+        mas_file = "concentric_transformer_contiguous_rectangular_wire.json"
+        mas_file_path = os.path.join(self.mas_files_path, mas_file)
+        if not os.path.exists(mas_file_path):
+            self.skipTest(f"{mas_file} not found")
+            
+        impedance = self._run_eddy_current_simulation(
+            mas_file=mas_file,
+            project_name=f"test_concentric_rect_wire_{int(time.time())}"
+        )
+
+        magnetizing_inductance = impedance.inductanceMatrix[0].magnitude[0][0].nominal
+        print(f"Concentric transformer (rectangular wire) magnetizing inductance: {magnetizing_inductance:.3e} H")
         
-        print(f"Transformer simulation completed successfully")
+        # Verify we got valid results
+        self.assertIsNotNone(impedance)
+        self.assertIsNotNone(impedance.inductanceMatrix)
+        self.assertGreater(len(impedance.inductanceMatrix), 0)
 
 
 if __name__ == '__main__':

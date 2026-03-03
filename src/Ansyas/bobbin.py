@@ -1,5 +1,9 @@
-import ansyas_utils
-import MAS_models as MAS
+try:
+    from . import ansyas_utils
+    from . import MAS_models as MAS
+except ImportError:
+    import ansyas_utils
+    import MAS_models as MAS
 from ansys.aedt.core import constants as pyaedt_constants
 
 
@@ -51,7 +55,8 @@ class Bobbin:
         total_height = bobbinData.windingWindows[0].height + bobbinData.wallThickness * 2
         total_width = bobbinData.windingWindows[0].width + bobbinData.columnWidth
         total_depth = bobbinData.windingWindows[0].width + bobbinData.columnDepth
-        if bobbinData.columnShape is MAS.ColumnShape.round:
+        column_shape_value = bobbinData.columnShape.value if hasattr(bobbinData.columnShape, 'value') else str(bobbinData.columnShape)
+        if column_shape_value == 'round':
             bobbin = self.project.modeler.create_cylinder(
                 orientation=pyaedt_constants.Axis.Z,
                 origin=[0, 0, -total_height / 2],

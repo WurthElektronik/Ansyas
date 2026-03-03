@@ -5,8 +5,12 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 
-import mas_autocomplete
-from ansyas import Ansyas
+try:
+    from . import mas_autocomplete
+    from .ansyas import Ansyas
+except ImportError:
+    import mas_autocomplete
+    from ansyas import Ansyas
 
 
 if __name__ == "__main__":

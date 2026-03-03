@@ -1,5 +1,8 @@
 import math
-import MAS_models as MAS
+try:
+    from . import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
 
 
 class Outputs:
@@ -22,6 +25,11 @@ class Outputs:
             category_data = []
             available_report_quantities = self.project.post.available_report_quantities(context={"solution_matrix": "windings"}, quantities_category=category)
             data = self.project.post.get_solution_data(expressions=available_report_quantities, context={"solution_matrix": "windings"})
+
+            # Handle case when data retrieval fails (returns False or None)
+            if not data or not hasattr(data, 'units_sweeps'):
+                print(f"Warning: Could not retrieve {category} data from simulation")
+                return []
 
             number_windings = int(math.sqrt(len(available_report_quantities)))
             frequency_multiplier = 1e9

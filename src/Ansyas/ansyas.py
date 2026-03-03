@@ -11,22 +11,42 @@ The architecture allows swapping backends:
 """
 
 import os
+import logging
 from typing import Optional, List, Dict, Any, Union
 
-import MAS_models as MAS
-import ansyas_utils
+logger = logging.getLogger(__name__)
 
-from backends.base import (
-    GeometryBackend,
-    MaterialBackend,
-    MeshingBackend,
-    ExcitationBackend,
-    SolverBackend,
-    SolverSetup,
-    BackendRegistry,
-    Axis,
-    Plane,
-)
+try:
+    from . import MAS_models as MAS
+    from . import ansyas_utils
+except ImportError:
+    import MAS_models as MAS
+    import ansyas_utils
+
+try:
+    from .backends.base import (
+        GeometryBackend,
+        MaterialBackend,
+        MeshingBackend,
+        ExcitationBackend,
+        SolverBackend,
+        SolverSetup,
+        BackendRegistry,
+        Axis,
+        Plane,
+    )
+except ImportError:
+    from backends.base import (
+        GeometryBackend,
+        MaterialBackend,
+        MeshingBackend,
+        ExcitationBackend,
+        SolverBackend,
+        SolverSetup,
+        BackendRegistry,
+        Axis,
+        Plane,
+    )
 
 
 class Ansyas:
@@ -77,6 +97,20 @@ class Ansyas:
         self.refinement_percent = refinement_percent
         self.maximum_passes = maximum_passes
         self.scale = scale
+
+        if not 1 <= initial_mesh_configuration <= 5:
+            raise ValueError(f"initial_mesh_configuration must be 1-5, got {initial_mesh_configuration}")
+        if maximum_error_percent <= 0:
+            raise ValueError(f"maximum_error_percent must be > 0, got {maximum_error_percent}")
+        if maximum_passes < 1:
+            raise ValueError(f"maximum_passes must be >= 1, got {maximum_passes}")
+        if not 0 < refinement_percent <= 100:
+            raise ValueError(f"refinement_percent must be in (0, 100], got {refinement_percent}")
+        if scale <= 0:
+            raise ValueError(f"scale must be > 0, got {scale}")
+        if number_segments_arcs < 3:
+            raise ValueError(f"number_segments_arcs must be >= 3, got {number_segments_arcs}")
+
         
         # Backend names (for lazy initialization)
         self._geometry_backend_name = geometry_backend
@@ -118,13 +152,22 @@ class Ansyas:
         # For now, we only have Ansys backends implemented
         # Future: use BackendRegistry to get the appropriate backend class
         
-        from backends.ansys import (
-            AnsysGeometryBackend,
-            AnsysMaterialBackend,
-            AnsysMeshingBackend,
-            AnsysExcitationBackend,
-            AnsysSolverBackend,
-        )
+        try:
+            from .backends.ansys import (
+                AnsysGeometryBackend,
+                AnsysMaterialBackend,
+                AnsysMeshingBackend,
+                AnsysExcitationBackend,
+                AnsysSolverBackend,
+            )
+        except ImportError:
+            from backends.ansys import (
+                AnsysGeometryBackend,
+                AnsysMaterialBackend,
+                AnsysMeshingBackend,
+                AnsysExcitationBackend,
+                AnsysSolverBackend,
+            )
         
         self.geometry_backend = AnsysGeometryBackend()
         self.geometry_backend.initialize(project=project)
@@ -228,13 +271,12 @@ class Ansyas:
         self.project_name = project_name
         self.project_name = self.project_name.replace(" ", "_").replace(",", "_").replace(":", "_").replace("/", "_").replace("\\", "_")
 
-        if not os.path.exists(self.project_path):
-            os.makedirs(self.project_path)
+        # Directory already created above with exist_ok=True
 
-        self.project_name = f"{self.project_path}/{self.project_name}"
+        self.project_name = os.path.join(self.project_path, self.project_name)
 
         if self.solution_type == "SteadyState":
-            self.project = Icepak(
+            icepak_result = Icepak(
                 project=self.project_name,
                 solution_type="SteadyState",
                 non_graphical=non_graphical,
@@ -242,6 +284,20 @@ class Ansyas:
                 new_desktop=new_desktop_session,
                 close_on_exit=False
             )
+            # Handle case where Icepak returns boolean instead of object (license error)
+            if isinstance(icepak_result, bool):
+                raise RuntimeError(
+                    "Failed to initialize Icepak project. This is likely due to license limitations "
+                    "(Student version may not support Icepak). Error: Icepak initialization returned boolean."
+                )
+            self.project = icepak_result
+            
+            # Verify the Icepak object is properly initialized
+            if not hasattr(self.project, '_odesign') or self.project._odesign is None:
+                raise RuntimeError(
+                    "Failed to initialize Icepak project. AEDT connection may have failed. "
+                    "Ensure no other AEDT instances are running and try again."
+                )
         else:
             self.project = Maxwell3d(
                 project=self.project_name,
@@ -280,12 +336,20 @@ class Ansyas:
 
     def create_builders(self, magnetic: MAS.Magnetic):
         """Create domain-specific builders for core, coil, etc."""
-        import core as core_builder
-        import bobbin as bobbin_builder
-        import cooling as cooling_builder
-        import coil as coil_builder
-        import excitation as excitation_builder
-        import outputs
+        try:
+            from . import core as core_builder
+            from . import bobbin as bobbin_builder
+            from . import cooling as cooling_builder
+            from . import coil as coil_builder
+            from . import excitation as excitation_builder
+            from . import outputs
+        except ImportError:
+            import core as core_builder
+            import bobbin as bobbin_builder
+            import cooling as cooling_builder
+            import coil as coil_builder
+            import excitation as excitation_builder
+            import outputs
         
         self.core_builder = core_builder.Core(
             project=self.project,
@@ -398,7 +462,7 @@ class Ansyas:
                 name="AirOpening"
             )
 
-    def create_setup(self, frequency: float = 100000):
+    def create_setup(self, frequency: float = 100000, single_frequency: bool = False):
         """Create solver setup with frequency sweeps."""
         setup_config = SolverSetup(
             solver_type=self.solution_type,
@@ -415,7 +479,10 @@ class Ansyas:
         setup = self.solver_backend.create_setup(setup_config)
         
         if self.solution_type in ["EddyCurrent", "AC Magnetic"]:
-            self.solver_backend.add_default_frequency_sweeps(setup)
+            if single_frequency:
+                self.solver_backend.add_default_frequency_sweeps(setup, single_frequency=frequency)
+            else:
+                self.solver_backend.add_default_frequency_sweeps(setup)
         
         return setup
 
@@ -439,7 +506,8 @@ class Ansyas:
         self,
         mas: Union[MAS.Mas, dict],
         simulate: bool = False,
-        operating_point_index: int = 0
+        operating_point_index: int = 0,
+        single_frequency: bool = False
     ):
         """
         Create an automatic simulation from the MAS file.
@@ -527,13 +595,19 @@ class Ansyas:
             self.create_boundary_region(self.padding)
 
         self.create_setup(
-            inputs.operatingPoints[operating_point_index].excitationsPerWinding[0].frequency
+            inputs.operatingPoints[operating_point_index].excitationsPerWinding[0].frequency,
+            single_frequency=single_frequency
         )
         
         if self.solution_type in "SteadyState":
             self.meshing_backend.set_global_mesh_settings_icepak(meshtype=1)
+            # Enable radiation after setup is created
+            if hasattr(self, 'cooling_builder') and self.cooling_builder:
+                self.cooling_builder.enable_radiation()
 
-        self.fit()
+        # Skip fit() for Icepak to avoid gRPC issues - not essential for simulation
+        if self.solution_type not in "SteadyState":
+            self.fit()
 
         if simulate:
             self.analyze()

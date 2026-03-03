@@ -13,7 +13,10 @@ from ..base import (
     SolverSetup,
     GeometryObject,
 )
-import MAS_models as MAS
+try:
+    from ... import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
 
 
 class AnsysSolverBackend(SolverBackend):
@@ -45,8 +48,51 @@ class AnsysSolverBackend(SolverBackend):
     
     def create_setup(self, setup: SolverSetup) -> Any:
         """Create a solver setup with the given configuration."""
-        self._setup = self._project.create_setup("Setup")
         self._frequency = setup.frequency
+        
+        # Special handling for Icepak (SteadyState) - avoid PyAEDT bug
+        if self._solver_type in ["SteadyState", "Steady State"]:
+            # Check if setup already exists
+            if hasattr(self._project, 'setups') and self._project.setups:
+                self._setup = self._project.setups[0]
+                print("  Using existing Icepak setup")
+            else:
+                # Create setup using oDesign directly to bypass PyAEDT bug
+                try:
+                    odesign = self._project._odesign
+                    omodule = odesign.GetModule("SolveSetup")
+                    omodule.InsertSetup("SteadyState", 
+                        ["NAME:Setup", "Max Iterations:=", setup.max_passes])
+                    # Re-fetch setups
+                    if self._project.setups:
+                        self._setup = self._project.setups[0]
+                    else:
+                        raise RuntimeError("Failed to create Icepak setup")
+                except Exception as e:
+                    print(f"  Warning: Could not create setup via oDesign: {e}")
+                    # Last resort: try standard method
+                    self._setup = self._project.create_setup("Setup")
+            
+            # Configure Icepak-specific properties using oDesign to avoid gRPC issues
+            try:
+                odesign = self._project._odesign
+                omodule = odesign.GetModule("SolveSetup")
+                # Get current setup properties
+                setup_name = self._setup.name
+                # Update using EditSetup with proper Icepak parameters
+                omodule.EditSetup(setup_name, 
+                    ["NAME:" + setup_name,
+                     "Max Iterations:=", setup.max_passes,
+                     "Residual Energy:=", setup.max_error_percent / 100.0,
+                     "Flow Regime:=", "Turbulent",
+                     "Include Gravity:=", True,
+                     "Gravity Vector:=", [0, 0, -9.81]])
+            except Exception as e:
+                print(f"  Warning: Could not update Icepak setup properties: {e}")
+            return self._setup
+        
+        # Standard Maxwell setup creation
+        self._setup = self._project.create_setup("Setup")
         
         if self._solver_type in ["Transient", "TransientAPhiFormulation"]:
             if setup.stop_time:
@@ -94,30 +140,43 @@ class AnsysSolverBackend(SolverBackend):
         except Exception:
             return False
     
-    def add_default_frequency_sweeps(self, setup: Any = None) -> bool:
+    def add_default_frequency_sweeps(self, setup: Any = None, single_frequency: float = None) -> bool:
         """Add default frequency sweeps for magnetic simulations."""
         if setup is None:
             setup = self._setup
         
         try:
-            setup.add_eddy_current_sweep(
-                sweep_type="LinearStep",
-                start_frequency=1,
-                stop_frequency=100000,
-                step_size=10000,
-                units="Hz",
-                clear=False,
-                save_all_fields=True
-            )
-            setup.add_eddy_current_sweep(
-                sweep_type="LinearStep",
-                start_frequency=100000,
-                stop_frequency=1000000,
-                step_size=100000,
-                units="Hz",
-                clear=False,
-                save_all_fields=True
-            )
+            if single_frequency is not None:
+                # Single frequency for faster testing - use LinearStep with stop > start
+                setup.add_eddy_current_sweep(
+                    sweep_type="LinearStep",
+                    start_frequency=single_frequency,
+                    stop_frequency=single_frequency * 1.001,  # Stop must be > start
+                    step_size=single_frequency * 0.001,
+                    units="Hz",
+                    clear=True,
+                    save_all_fields=False
+                )
+            else:
+                # Full frequency sweep
+                setup.add_eddy_current_sweep(
+                    sweep_type="LinearStep",
+                    start_frequency=1,
+                    stop_frequency=100000,
+                    step_size=10000,
+                    units="Hz",
+                    clear=False,
+                    save_all_fields=True
+                )
+                setup.add_eddy_current_sweep(
+                    sweep_type="LinearStep",
+                    start_frequency=100000,
+                    stop_frequency=1000000,
+                    step_size=100000,
+                    units="Hz",
+                    clear=False,
+                    save_all_fields=True
+                )
             return True
         except Exception:
             return False

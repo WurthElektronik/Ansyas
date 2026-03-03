@@ -9,7 +9,10 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
-import MAS_models as MAS
+try:
+    from .. import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
 
 
 class Axis(Enum):

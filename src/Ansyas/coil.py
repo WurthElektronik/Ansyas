@@ -1,9 +1,17 @@
-import pyaedt
+try:
+    import ansys.aedt.core as pyaedt
+    from ansys.aedt.core.modeler.cad.object_3d import Object3d
+except ImportError:
+    import pyaedt
+    from pyaedt.modeler.cad.object3d import Object3d
 import math
-import ansyas_utils
-from pyaedt.modeler.cad.object3d import Object3d
+try:
+    from . import ansyas_utils
+    from . import MAS_models as MAS
+except ImportError:
+    import ansyas_utils
+    import MAS_models as MAS
 import hashlib
-import MAS_models as MAS
 
 
 class Coil:
@@ -77,27 +85,34 @@ class Coil:
         wire_material.wire_diameter = f"{ansyas_utils.resolve_dimensional_values(wire.strand.conductingDiameter)}meter"
 
     def get_wire_material(self, wire, is_insulation):
+        wire_type_value = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
         if is_insulation:
             wire_material = "Polyurethane 155"
-        elif wire.type is MAS.WireType.litz:
+        elif wire_type_value == 'litz':
             self.load_litz_wire(wire)
-            wire_material = wire.name
+            # Use the strand material (copper) instead of wire name for litz
+            if hasattr(wire, 'strand') and wire.strand and hasattr(wire.strand, 'material'):
+                wire_material = wire.strand.material
+            else:
+                wire_material = wire.name
         else:
             wire_material = wire.material
         return wire_material
 
     def get_wire_object_radius(self, wire, is_insulation):
-        if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
-            if wire.type is MAS.WireType.round:
+        wire_type_value = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
+        if wire_type_value in ['round', 'litz']:
+            if wire_type_value == 'round':
                 wire_minus_insulation_radius = ansyas_utils.resolve_dimensional_values(wire.conductingDiameter) / 2
                 outer_radius = ansyas_utils.resolve_dimensional_values(wire.outerDiameter) / 2
-            elif wire.type is MAS.WireType.litz:
+            elif wire_type_value == 'litz':
                 wire_minus_insulation_radius = ansyas_utils.resolve_dimensional_values(wire.outerDiameter) / 2
                 if wire.coating is not None and wire.coating.thickness is not None:
                     wire_minus_insulation_radius -= ansyas_utils.resolve_dimensional_values(wire.coating.thickness)
                 if wire.coating is not None and wire.coating.numberLayers is not None and wire.coating.thicknessLayers is not None:
                     wire_minus_insulation_radius -= wire.coating.numberLayers * wire.coating.thicknessLayers
-                if wire.coating.type is MAS.InsulationWireCoatingType.served:
+                coating_type_value = wire.coating.type.value if hasattr(wire.coating.type, 'value') else str(wire.coating.type)
+                if coating_type_value == 'served':
                     wire_minus_insulation_radius -= 0.000035
                 outer_radius = ansyas_utils.resolve_dimensional_values(wire.outerDiameter) / 2
 
@@ -109,7 +124,8 @@ class Coil:
             else:
                 return wire_minus_insulation_radius
         else:
-            if wire.type is MAS.WireType.rectangular or wire.type is MAS.WireType.foil or wire.type is MAS.WireType.planar:
+            wire_type_value = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
+            if wire_type_value in ['rectangular', 'foil', 'planar']:
                 wire_minus_insulation_width = ansyas_utils.resolve_dimensional_values(wire.conductingWidth)
                 wire_minus_insulation_height = ansyas_utils.resolve_dimensional_values(wire.conductingHeight)
                 outer_width = ansyas_utils.resolve_dimensional_values(wire.outerWidth)
@@ -250,11 +266,19 @@ class ConcentricCoil(Coil):
             converted_turn_coordinates = ansyas_utils.convert_axis(turn.coordinates)
             wire_material = self.get_wire_material(wire, is_insulation)
 
-            if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
+            # Compare by value to handle enum identity issues
+            wire_type_value = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
+            if wire_type_value in ['round', 'litz']:
                 wire_object_radius = self.get_wire_object_radius(wire, is_insulation)
 
                 if wire_object_radius is None:
+                    print(f"ERROR: wire_object_radius is None for turn {turn.name}")
                     return None
+                
+                print(f"DEBUG: Creating circle for turn {turn.name}")
+                print(f"  coordinates: {converted_turn_coordinates}")
+                print(f"  radius: {wire_object_radius}")
+                print(f"  material: {wire_material}")
                     
                 turn_width_half_side_section = self.project.modeler.create_circle(
                     orientation=pyaedt.constants.Plane.YZ,
@@ -301,7 +325,8 @@ class ConcentricCoil(Coil):
 
             result = False
             while not result:
-                if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
+                wire_type_value2 = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
+                if wire_type_value2 in ['round', 'litz']:
                     turn_corner_circle = self.project.modeler.create_circle(
                         orientation=pyaedt.constants.Plane.YZ,
                         origin=[0, turn_turn_radius, 0],
@@ -371,11 +396,15 @@ class ConcentricCoil(Coil):
         def create_primitive_round_turn(turn: MAS.Turn, wire: MAS.Wire, bobbin: MAS.Bobbin, is_insulation=False):
             wire_material = self.get_wire_material(wire, is_insulation)
             wire_object_height = 0
-            if wire.type is MAS.WireType.round or wire.type is MAS.WireType.litz:
+            
+            # Check wire type using value comparison
+            wire_type_value = wire.type.value if hasattr(wire.type, 'value') else str(wire.type)
+            
+            if wire_type_value in ['round', 'litz']:
                 wire_object_radius = self.get_wire_object_radius(wire, is_insulation)
-                wire_object_height = wire_object_radius * 2
                 if wire_object_radius is None:
                     return None
+                wire_object_height = wire_object_radius * 2
 
                 name = f"{ansyas_utils.clean_name(turn.name)}{'_copper' if not is_insulation else '_insulation'}"
 
@@ -390,6 +419,7 @@ class ConcentricCoil(Coil):
                     non_model=False
                 )
             else:
+                # For rectangular/foil/planar wire - returns tuple
                 wire_object_width, wire_object_height = self.get_wire_object_radius(wire, is_insulation)
 
                 if wire_object_width is None or wire_object_height is None:
@@ -417,14 +447,15 @@ class ConcentricCoil(Coil):
             )
             return turn_object
 
-        if bobbin.processedDescription.columnShape is MAS.ColumnShape.round:
+        column_shape_value = bobbin.processedDescription.columnShape.value if hasattr(bobbin.processedDescription.columnShape, 'value') else str(bobbin.processedDescription.columnShape)
+        if column_shape_value == 'round':
             turn_object = create_primitive_round_turn(turn, wire, bobbin, is_insulation=False)
         else:
             turn_object = create_primitive_rectangular_turn(turn, wire, bobbin, is_insulation=False)
 
         turn_insulation_object = None
         if self.add_insulation:
-            if bobbin.processedDescription.columnShape is MAS.ColumnShape.round:
+            if column_shape_value == 'round':
                 turn_insulation_object = create_primitive_round_turn(turn, wire, bobbin, is_insulation=True)
             else:
                 turn_insulation_object = create_primitive_rectangular_turn(turn, wire, bobbin, is_insulation=True)
