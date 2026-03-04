@@ -1,7 +1,12 @@
 import os
 import sys
-sys.path.append(os.path.dirname(__file__) + "./src/")
-import MAS_models as MAS
+sys.path.append(os.path.dirname(__file__) + "/src/")
+
+try:
+    from . import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
+
 import PyMKF
 
 

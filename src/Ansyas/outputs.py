@@ -1,5 +1,8 @@
 import math
-import MAS_models as MAS
+try:
+    from . import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
 
 
 class Outputs:
@@ -23,6 +26,11 @@ class Outputs:
             available_report_quantities = self.project.post.available_report_quantities(context={"solution_matrix": "windings"}, quantities_category=category)
             data = self.project.post.get_solution_data(expressions=available_report_quantities, context={"solution_matrix": "windings"})
 
+            # Handle case when data retrieval fails (returns False or None)
+            if not data or not hasattr(data, 'units_sweeps'):
+                print(f"Warning: Could not retrieve {category} data from simulation")
+                return []
+
             number_windings = int(math.sqrt(len(available_report_quantities)))
             frequency_multiplier = 1e9
             if data.units_sweeps == "GHz":
@@ -41,11 +49,13 @@ class Outputs:
             for expression_index, expression in enumerate(available_report_quantities):
                 horizontal_winding_index = int(math.floor(expression_index / number_windings))
                 vertical_winding_index = expression_index % number_windings
-                data_per_frequency = data.data_magnitude(expression=expression, convert_to_SI=True)
+                # PyAEDT 0.24+ uses get_expression_data instead of data_magnitude
+                _, data_per_frequency = data.get_expression_data(expression=expression, formula="mag", convert_to_SI=True)
                 for frequency_index, datum in enumerate(data_per_frequency):
                     category_data[frequency_index]["magnitude"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
                 if include_phase:
-                    data_per_frequency = data.data_phase(expression=expression)
+                    # PyAEDT 0.24+ uses get_expression_data instead of data_phase
+                    _, data_per_frequency = data.get_expression_data(expression=expression, formula="phasedeg")
                     for frequency_index, datum in enumerate(data_per_frequency):
                         category_data[frequency_index]["phase"][horizontal_winding_index][vertical_winding_index] = {"nominal": datum}
 

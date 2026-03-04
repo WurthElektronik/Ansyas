@@ -1,9 +1,13 @@
 import typing
-import ansyas_utils
+try:
+    from . import ansyas_utils
+    from . import MAS_models as MAS
+except ImportError:
+    import ansyas_utils
+    import MAS_models as MAS
 import math
 import time
 import os
-import MAS_models as MAS
 
 
 class Excitation:
@@ -13,7 +17,15 @@ class Excitation:
         self.project = project
 
     def create_matrix(self, excitations: typing.List[str], name):
-        matrix = self.project.assign_matrix(assignment=excitations, matrix_name=name)
+        # PyAEDT 1.0+ uses schema-based matrix assignment
+        try:
+            from ansys.aedt.core.modules.boundary.maxwell_boundary import MatrixACMagnetic, SourceACMagnetic
+            # Convert string excitations to SourceACMagnetic objects
+            sources = [SourceACMagnetic(name=exc, return_path="") for exc in excitations]
+            matrix = self.project.assign_matrix(MatrixACMagnetic(signal_sources=sources, matrix_name=name))
+        except ImportError:
+            # Fallback for older PyAEDT versions
+            matrix = self.project.assign_matrix(assignment=excitations, matrix_name=name)
         return matrix
 
     def add_excitation(self, coil: MAS.Coil, turns_and_terminals, operating_point: MAS.OperatingPoint = None, primary_current: float = None):

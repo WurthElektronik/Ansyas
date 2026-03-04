@@ -1,6 +1,9 @@
 import math
 from enum import Enum
-import MAS_models as MAS
+try:
+    from . import MAS_models as MAS
+except ImportError:
+    import MAS_models as MAS
 
 
 color_ferrite = [89, 94, 107]

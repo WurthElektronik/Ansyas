@@ -1,35 +1,137 @@
+"""
+Ansyas - Decoupled FEM Simulation Framework for Magnetics.
+
+This module provides the main Ansyas class that orchestrates FEM simulations
+using pluggable backends for geometry, meshing, solving, and excitation.
+
+The architecture allows swapping backends:
+- Geometry: Ansys (PyAEDT), CadQuery, etc.
+- Meshing: Ansys, Gmsh, etc.
+- Solver: Ansys Maxwell/Icepak, MFEM, etc.
+"""
+
 import os
+import logging
+from typing import Optional, List, Dict, Any, Union
 
-import MAS_models as MAS
-import shutil
-import pyaedt
-import typing
-import excitation
-import ansyas_utils
-import bobbin as bobbin_builder
-import core as core_builder
-import cooling as cooling_builder
-import coil as coil_builder
-import excitation as excitation_builder
-import outputs
+logger = logging.getLogger(__name__)
 
-from pyaedt.modeler.cad.object3d import Object3d
+try:
+    from . import MAS_models as MAS
+    from . import ansyas_utils
+except ImportError:
+    import MAS_models as MAS
+    import ansyas_utils
+
+try:
+    from .backends.base import (
+        GeometryBackend,
+        MaterialBackend,
+        MeshingBackend,
+        ExcitationBackend,
+        SolverBackend,
+        SolverSetup,
+        BackendRegistry,
+        Axis,
+        Plane,
+    )
+except ImportError:
+    from backends.base import (
+        GeometryBackend,
+        MaterialBackend,
+        MeshingBackend,
+        ExcitationBackend,
+        SolverBackend,
+        SolverSetup,
+        BackendRegistry,
+        Axis,
+        Plane,
+    )
 
 
 class Ansyas:
-
-    def __init__(self, number_segments_arcs=12, initial_mesh_configuration=5, maximum_error_percent=3, maximum_passes=40, refinement_percent=30, scale=1):
+    """
+    Main orchestrator for FEM magnetic simulations.
+    
+    This class coordinates the various backends (geometry, meshing, solving)
+    to perform complete magnetic simulations. By default, it uses Ansys backends
+    but can be configured to use alternative backends.
+    
+    Attributes:
+        geometry_backend: Backend for 3D geometry creation
+        material_backend: Backend for material definition
+        meshing_backend: Backend for mesh generation
+        excitation_backend: Backend for excitation setup
+        solver_backend: Backend for FEM solving
+    """
+    
+    def __init__(
+        self,
+        geometry_backend: str = "ansys",
+        meshing_backend: str = "ansys",
+        solver_backend: str = "ansys",
+        number_segments_arcs: int = 12,
+        initial_mesh_configuration: int = 5,
+        maximum_error_percent: float = 3,
+        maximum_passes: int = 40,
+        refinement_percent: float = 30,
+        scale: float = 1
+    ):
+        """
+        Initialize Ansyas with specified backends.
+        
+        Args:
+            geometry_backend: Name of geometry backend ("ansys", "cadquery")
+            meshing_backend: Name of meshing backend ("ansys", "gmsh")
+            solver_backend: Name of solver backend ("ansys", "mfem")
+            number_segments_arcs: Number of segments for arc approximation
+            initial_mesh_configuration: Initial mesh slider (1-5)
+            maximum_error_percent: Maximum error percentage for convergence
+            maximum_passes: Maximum adaptive passes
+            refinement_percent: Refinement percentage per pass
+            scale: Scale factor for geometry
+        """
         self.initial_mesh_configuration = initial_mesh_configuration
         self.number_segments_arcs = number_segments_arcs
         self.maximum_error_percent = maximum_error_percent
         self.refinement_percent = refinement_percent
         self.maximum_passes = maximum_passes
         self.scale = scale
+
+        if not 1 <= initial_mesh_configuration <= 5:
+            raise ValueError(f"initial_mesh_configuration must be 1-5, got {initial_mesh_configuration}")
+        if maximum_error_percent <= 0:
+            raise ValueError(f"maximum_error_percent must be > 0, got {maximum_error_percent}")
+        if maximum_passes < 1:
+            raise ValueError(f"maximum_passes must be >= 1, got {maximum_passes}")
+        if not 0 < refinement_percent <= 100:
+            raise ValueError(f"refinement_percent must be in (0, 100], got {refinement_percent}")
+        if scale <= 0:
+            raise ValueError(f"scale must be > 0, got {scale}")
+        if number_segments_arcs < 3:
+            raise ValueError(f"number_segments_arcs must be >= 3, got {number_segments_arcs}")
+
+        
+        # Backend names (for lazy initialization)
+        self._geometry_backend_name = geometry_backend
+        self._meshing_backend_name = meshing_backend
+        self._solver_backend_name = solver_backend
+        
+        # Backend instances (initialized when project is created)
+        self.geometry_backend: Optional[GeometryBackend] = None
+        self.material_backend: Optional[MaterialBackend] = None
+        self.meshing_backend: Optional[MeshingBackend] = None
+        self.excitation_backend: Optional[ExcitationBackend] = None
+        self.solver_backend: Optional[SolverBackend] = None
+        
+        # Domain-specific builders (these use the backends)
         self.bobbin_builder = None
         self.core_builder = None
         self.cooling_builder = None
         self.coil_builder = None
         self.outputs_extractor = None
+        
+        # Region padding settings
         self.padding = {
             "x_pos": 100,
             "y_pos": 100,
@@ -38,354 +140,387 @@ class Ansyas:
             "y_neg": 100,
             "z_neg": 100,
         }
+        
+        # Project state
+        self.project = None
+        self.project_path = None
+        self.project_name = None
+        self.solution_type = None
+
+    def _initialize_backends(self, project):
+        """Initialize backends with the created project."""
+        # For now, we only have Ansys backends implemented
+        # Future: use BackendRegistry to get the appropriate backend class
+        
+        try:
+            from .backends.ansys import (
+                AnsysGeometryBackend,
+                AnsysMaterialBackend,
+                AnsysMeshingBackend,
+                AnsysExcitationBackend,
+                AnsysSolverBackend,
+            )
+        except ImportError:
+            from backends.ansys import (
+                AnsysGeometryBackend,
+                AnsysMaterialBackend,
+                AnsysMeshingBackend,
+                AnsysExcitationBackend,
+                AnsysSolverBackend,
+            )
+        
+        self.geometry_backend = AnsysGeometryBackend()
+        self.geometry_backend.initialize(project=project)
+        
+        self.material_backend = AnsysMaterialBackend()
+        self.material_backend.initialize(project=project)
+        
+        self.meshing_backend = AnsysMeshingBackend()
+        self.meshing_backend.initialize(project=project)
+        
+        self.excitation_backend = AnsysExcitationBackend()
+        self.excitation_backend.initialize(project=project)
+        
+        self.solver_backend = AnsysSolverBackend()
+        self.solver_backend.initialize(solver_type=self.solution_type, project=project)
 
     def fit(self):
-        self.project.modeler.fit_all()
+        """Fit the view to show all objects."""
+        if self.geometry_backend:
+            self.geometry_backend.fit_all()
+        elif self.project:
+            self.project.modeler.fit_all()
 
     def analyze(self):
-        self.project.analyze()
+        """Run the simulation."""
+        if self.solver_backend:
+            return self.solver_backend.analyze()
+        elif self.project:
+            self.project.analyze()
 
     def save(self):
-        self.project.oeditor.CleanUpModel()
-        self.project.save_project()
+        """Save the project."""
+        if self.solver_backend:
+            self.solver_backend.save_project()
+        elif self.project:
+            self.project.oeditor.CleanUpModel()
+            self.project.save_project()
 
-    def set_units(self, units):
-        """Sets the units of the modeler.
+    def set_units(self, units: str):
+        """
+        Set the units of the modeler.
 
         Parameters
         ----------
         units : str
-            Units to sue in the model of the magnetic.
-
+            Units to use in the model of the magnetic.
 
         Examples
         --------
         Sets units to meters.
 
-
         >>> ansyas.set_units("meter")
-
         """
-        self.project.modeler.model_units = units
+        if self.geometry_backend:
+            self.geometry_backend.set_units(units)
+        elif self.project:
+            self.project.modeler.model_units = units
 
-    def create_project(self, outputs_folder, project_name, non_graphical=False, new_desktop_session=False, solution_type="EddyCurrent", specified_version=None):
-        """Create a project for the given inputs.
+    def create_project(
+        self,
+        outputs_folder: str,
+        project_name: str,
+        non_graphical: bool = False,
+        new_desktop_session: bool = False,
+        solution_type: str = "EddyCurrent",
+        specified_version: str = None
+    ):
+        """
+        Create a project for the given inputs.
 
-        Configures Ansyas and create an Ansys project with the requested inputs.
+        Configures Ansyas and creates an Ansys project with the requested inputs.
 
         Parameters
         ----------
-        mas : MAS.Mas, dict
-            Mas file or dict containing the information about the magnetic, its
-            inputs, and outputs.
-        non_graphical : str
+        outputs_folder : str
             Path to store the output project.
         project_name : str
             Name of the project.
         non_graphical : bool
-            Whether to launch AEDT in non-graphical mode. The default
-            is ``False``, in which case AEDT is launched in graphical
-            mode. This parameter is ignored when a script is launched within
-            AEDT.
-        non_graphical : bool, optional
-            Whether to launch AEDT in non-graphical mode. The default
-            is ``False``, in which case AEDT is launched in graphical
-            mode. This parameter is ignored when a script is launched within
-            AEDT.
+            Whether to launch AEDT in non-graphical mode.
         new_desktop_session : bool, optional
-            Whether to launch an instance of AEDT in a new thread, even if
-            another instance of the ``specified_version`` is active on the
-            machine. The default is ``False``. This parameter is ignored
-            when a script is launched within AEDT.
+            Whether to launch an instance of AEDT in a new thread.
         solution_type : str, optional
             Solution type to apply to the design. The default is
             ``EddyCurrent``.
         specified_version : str
-            Version of AEDT  to use.
+            Version of AEDT to use.
 
-        Examples
-        --------
-        Creates an Icepak design.
-
-
-        >>> from src.ansyas import Ansyas
-        >>> project = ansyas.create_project(
-            outputs_folder=outputs_folder,
-            project_name=project_name,
-            non_graphical=non_graphical,
-            solution_type="SteadyState",
-            new_desktop_session=new_desktop_session
-        )
-
+        Returns
+        -------
+        project
+            The created PyAEDT project instance.
         """
+        from ansys.aedt.core import Maxwell3d, Icepak
+        
         project_name = f"{project_name}.aedt"
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), outputs_folder)
 
-        # shutil.rmtree(self.project_path, ignore_errors=True)
         os.makedirs(self.project_path, exist_ok=True)
-        # self.project_name = os.path.join(self.project_path, project_name)
         self.solution_type = solution_type
         self.project_name = project_name
         self.project_name = self.project_name.replace(" ", "_").replace(",", "_").replace(":", "_").replace("/", "_").replace("\\", "_")
 
-        if not os.path.exists(self.project_path):
-            os.makedirs(self.project_path)
+        # Directory already created above with exist_ok=True
 
-        self.project_name = f"{self.project_path}/{self.project_name}"
+        self.project_name = os.path.join(self.project_path, self.project_name)
 
         if self.solution_type == "SteadyState":
-            self.project = pyaedt.Icepak(
+            icepak_result = Icepak(
                 project=self.project_name,
                 solution_type="SteadyState",
                 non_graphical=non_graphical,
-                specified_version=specified_version,
+                version=specified_version,
                 new_desktop=new_desktop_session,
                 close_on_exit=False
             )
-
+            # Handle case where Icepak returns boolean instead of object (license error)
+            if isinstance(icepak_result, bool):
+                raise RuntimeError(
+                    "Failed to initialize Icepak project. This is likely due to license limitations "
+                    "(Student version may not support Icepak). Error: Icepak initialization returned boolean."
+                )
+            self.project = icepak_result
+            
+            # Verify the Icepak object is properly initialized
+            if not hasattr(self.project, '_odesign') or self.project._odesign is None:
+                raise RuntimeError(
+                    "Failed to initialize Icepak project. AEDT connection may have failed. "
+                    "Ensure no other AEDT instances are running and try again."
+                )
         else:
-            self.project = pyaedt.Maxwell3d(
+            self.project = Maxwell3d(
                 project=self.project_name,
                 solution_type=solution_type,
                 non_graphical=non_graphical,
-                specified_version=specified_version,
+                version=specified_version,
                 new_desktop=new_desktop_session,
                 close_on_exit=False
             )
+            
+            # Verify the Maxwell3d object is properly initialized
+            if not hasattr(self.project, '_odesign') or self.project._odesign is None:
+                raise RuntimeError(
+                    "Failed to initialize Maxwell3d project. AEDT connection may have failed. "
+                    "Ensure no other AEDT instances are running and try again."
+                )
+            
             self.project.change_design_settings({"ComputeTransientCapacitance": True})
             self.project.change_design_settings({"ComputeTransientInductance": True})
-            self.project.mesh.assign_initial_mesh_from_slider(self.initial_mesh_configuration, curvilinear=True)
+            if hasattr(self.project, '_odesign') and self.project._odesign is not None:
+                self.project.mesh.assign_initial_mesh_from_slider(
+                    self.initial_mesh_configuration,
+                    curvilinear=True
+                )
 
         self.project.autosave_disable()
+        
+        # Initialize backends with the created project
+        self._initialize_backends(self.project)
 
         return self.project
 
-    def get_project_location(self):
+    def get_project_location(self) -> str:
+        """Get the project file location."""
         return self.project_name
 
-    def move(self, object3D: Object3d, vector: typing.List[float]):
-        if isinstance(object3D, list):
-            result = True
-            for elem in object3D:
-                result = result and elem.move(self.convert_units(vector))
-            return result
-        else:
-            return object3D.move(self.convert_units(vector))
-
-    def rotate(self, object3D: Object3d, axis, angle):
-        return object3D.rotate(axis=axis, angle=angle)
-    
-    def clone(self, object3D: Object3d):
-        result, objects = self.project.modeler.clone(object3D)
-        if result:
-            if isinstance(object3D, list):
-                return [self.project.modeler.get_object_from_name(x) for x in objects]
-            else:
-                return self.project.modeler.get_object_from_name(objects[0])
-        else:
-            return None
-
-    def create_non_model_rectangle(self, width, height, orientation, center, name=None):
-        if orientation is pyaedt.constants.PLANE.YZ:
-            origin = [0, center[0] - width / 2, center[1] - height / 2]
-        elif orientation is pyaedt.constants.PLANE.XY:
-            origin = [center[0] - width / 2, center[1] - height / 2, 0]
-        elif orientation is pyaedt.constants.PLANE.ZX:
-            origin = [center[0] - width / 2, 0, center[1] - height / 2]
-        rectangle = self.project.modeler.create_rectangle(
-            origin=self.convert_units(origin),
-            sizes=self.convert_units([width, height]),
-            name=name,
-            orientation=orientation,
-            non_model=True
-        )
-        rectangle.model = False
-
-        if isinstance(rectangle, str):
-            return self.project.modeler.get_object_from_name(rectangle)
-        else:
-            return rectangle
-
     def create_builders(self, magnetic: MAS.Magnetic):
+        """Create domain-specific builders for core, coil, etc."""
+        try:
+            from . import core as core_builder
+            from . import bobbin as bobbin_builder
+            from . import cooling as cooling_builder
+            from . import coil as coil_builder
+            from . import excitation as excitation_builder
+            from . import outputs
+        except ImportError:
+            import core as core_builder
+            import bobbin as bobbin_builder
+            import cooling as cooling_builder
+            import coil as coil_builder
+            import excitation as excitation_builder
+            import outputs
+        
         self.core_builder = core_builder.Core(
-            project=self.project, 
+            project=self.project,
         )
         self.cooling_builder = cooling_builder.Cooling(
-            project=self.project, 
+            project=self.project,
         )
         self.bobbin_builder = bobbin_builder.Bobbin(
-            project=self.project, 
+            project=self.project,
             number_segments_arcs=self.number_segments_arcs
         )
 
         if self.solution_type == "Electrostatic":
             if magnetic.core.functionalDescription.shape.family is MAS.CoreShapeFamily.t:
                 self.coil_builder = coil_builder.ToroidalCoil(
-                    project=self.project, 
+                    project=self.project,
                     number_segments_arcs=self.number_segments_arcs,
                     add_insulation=True
                 )
             else:
                 self.coil_builder = coil_builder.ConcentricSpiralCoil(
-                    project=self.project, 
+                    project=self.project,
                     number_segments_arcs=self.number_segments_arcs,
                     add_insulation=True
                 )
         else:
             if magnetic.core.functionalDescription.shape.family is MAS.CoreShapeFamily.t:
                 self.coil_builder = coil_builder.ToroidalCoil(
-                    project=self.project, 
+                    project=self.project,
                     number_segments_arcs=self.number_segments_arcs,
                     add_insulation=False
                 )
             else:
                 self.coil_builder = coil_builder.ConcentricCoil(
-                    project=self.project, 
+                    project=self.project,
                     number_segments_arcs=self.number_segments_arcs,
                     add_insulation=False
                 )
 
         self.excitation_builder = excitation_builder.Excitation(
-            project=self.project, 
+            project=self.project,
         )
         self.outputs_extractor = outputs.Outputs(
-            project=self.project, 
+            project=self.project,
         )
 
-    def create_boundary_region(self, padding=None):
+    def create_boundary_region(self, padding: Dict[str, float] = None):
+        """Create the simulation boundary region."""
         if padding is None:
-            region = self.project.modeler.create_air_region(x_pos=50, y_pos=50, z_pos=50, x_neg=50, y_neg=50, z_neg=50)
-            if region is None or region is False:
-                region = self.project.modeler.get_objects_w_string("Region")
-                region = self.project.modeler.get_object_from_name(region[0])
-
-            return region
+            if self.geometry_backend:
+                return self.geometry_backend.create_air_region({
+                    "x_pos": 50, "y_pos": 50, "z_pos": 50,
+                    "x_neg": 50, "y_neg": 50, "z_neg": 50
+                })
+            else:
+                region = self.project.modeler.create_air_region(
+                    x_pos=50, y_pos=50, z_pos=50,
+                    x_neg=50, y_neg=50, z_neg=50
+                )
+                if region is None or region is False:
+                    region = self.project.modeler.get_objects_w_string("Region")
+                    region = self.project.modeler.get_object_from_name(region[0])
+                return region
         else:
-            region = self.project.modeler.create_region(pad_percent=[padding["x_pos"], padding["x_neg"], padding["y_pos"], padding["y_neg"], padding["z_pos"], padding["z_neg"]], is_percentage=True)
-            if region is None or region is False:
-                region = self.project.modeler.get_objects_w_string("Region")
-                region = self.project.modeler.get_object_from_name(region[0])
-
-            return region
+            padding_list = [
+                padding["x_pos"], padding["x_neg"],
+                padding["y_pos"], padding["y_neg"],
+                padding["z_pos"], padding["z_neg"]
+            ]
+            if self.geometry_backend:
+                return self.geometry_backend.create_region(padding_list, is_percentage=True)
+            else:
+                region = self.project.modeler.create_region(
+                    pad_percent=padding_list,
+                    is_percentage=True
+                )
+                if region is None or region is False:
+                    region = self.project.modeler.get_objects_w_string("Region")
+                    region = self.project.modeler.get_object_from_name(region[0])
+                return region
 
     def create_boundary_conditions(self, conditions):
-        region = self.project.modeler.get_objects_w_string("Region")
-        region = self.project.modeler.get_object_from_name(region[0])
+        """Create thermal boundary conditions."""
+        region_names = self.project.modeler.get_objects_w_string("Region")
+        region = self.project.modeler.get_object_from_name(region_names[0])
 
         if conditions.cooling is None or conditions.cooling.velocity is None:
             faces = region.faces
-            self.project.assign_pressure_free_opening(
-                boundary_name="AirOpening",
-                assignment=[int(str(x)) for x in faces]
+            self.excitation_backend.assign_pressure_free_opening(
+                faces=[int(str(x)) for x in faces],
+                name="AirOpening"
             )
         else:
             velocity = ansyas_utils.convert_axis(conditions.cooling.velocity)
-            self.project.assign_free_opening(
-                boundary_name="AirOpening",
-                assignment=region.bottom_face_x,
+            velocity_strs = [
+                f"{velocity[0]}m_per_sec",
+                f"{velocity[1]}m_per_sec",
+                f"{velocity[2]}m_per_sec"
+            ]
+            temperature = (
+                "AmbientTemp" if conditions.cooling.temperature is None
+                else conditions.cooling.temperature
+            )
+            
+            self.excitation_backend.assign_free_opening(
+                faces=region.bottom_face_x,
                 flow_type="Pressure",
-                velocity=[f"{velocity[0]}m_per_sec", f"{velocity[1]}m_per_sec", f"{velocity[2]}m_per_sec"],
-                temperature="AmbientTemp" if conditions.cooling.temperature is None else conditions.cooling.temperature,
-            )
-            self.project.assign_free_opening(
-                assignment=[int(str(x)) for x in faces if x != region.bottom_face_x],
-                flow_type="Pressure",
-                velocity=[f"{velocity[0]}m_per_sec", f"{velocity[1]}m_per_sec", f"{velocity[2]}m_per_sec"],
-                temperature="AmbientTemp" if conditions.cooling.temperature is None else conditions.cooling.temperature,
+                velocity=velocity_strs,
+                temperature=temperature,
+                name="AirOpening"
             )
 
-    def create_setup(self, frequency: float = 100000, ):
-        setup = self.project.create_setup("Setup")
-        if self.project.solution_type == "Transient" or self.project.solution_type == "TransientAPhiFormulation":
-            setup.props["StopTime"] = f"{2 / frequency}s"
-            setup.props["TimeStep"] = f"{2 / frequency / 10}s"
-        elif self.project.solution_type in ["EddyCurrent", "AC Magnetic"]:
+    def create_setup(self, frequency: float = 100000, single_frequency: bool = False):
+        """Create solver setup with frequency sweeps."""
+        setup_config = SolverSetup(
+            solver_type=self.solution_type,
+            frequency=frequency,
+            max_passes=self.maximum_passes,
+            max_error_percent=self.maximum_error_percent,
+            refinement_percent=self.refinement_percent
+        )
+        
+        if self.solution_type in ["Transient", "TransientAPhiFormulation"]:
+            setup_config.stop_time = 2 / frequency
+            setup_config.time_step = 2 / frequency / 10
+        
+        setup = self.solver_backend.create_setup(setup_config)
+        
+        if self.solution_type in ["EddyCurrent", "AC Magnetic"]:
+            if single_frequency:
+                self.solver_backend.add_default_frequency_sweeps(setup, single_frequency=frequency)
+            else:
+                self.solver_backend.add_default_frequency_sweeps(setup)
+        
+        return setup
 
-            setup.props["Frequency"] = f"{frequency * 3}"
-            setup.props["PercentRefinement"] = self.refinement_percent
-            setup.props["MaximumPasses"] = self.maximum_passes
-            setup.props["PercentError"] = self.maximum_error_percent
-            setup.props["HasSweepSetup"] = True
-
-            setup.add_eddy_current_sweep(
-                sweep_type="LinearStep",
-                start_frequency=1,
-                stop_frequency=100000,
-                step_size=10000,
-                units="Hz",
-                clear=False,
-                save_all_fields=True
-            )
-            setup.add_eddy_current_sweep(
-                sweep_type="LinearStep",
-                start_frequency=100000,
-                stop_frequency=1000000,
-                step_size=100000,
-                units="Hz",
-                clear=False,
-                save_all_fields=True
-            )
-
-            self.frequency = frequency
-        elif self.project.solution_type == "Electrostatic":
-
-            setup.props["Frequency"] = f"{frequency * 3}"
-            setup.props["PercentRefinement"] = self.refinement_percent
-            setup.props["MaximumPasses"] = 40
-            setup.props["PercentError"] = self.maximum_error_percent
-            self.frequency = frequency
-
-    def add_skin_effect(self, wires_faces, skin_depth: float = 0.0002, number_layers=2):
+    def add_skin_effect(
+        self,
+        wires_faces,
+        skin_depth: float = 0.0002,
+        number_layers: int = 2
+    ):
+        """Add skin effect mesh refinement to wire faces."""
         if not isinstance(wires_faces, list):
             wires_faces = [wires_faces]
-        self.project.mesh.assign_skin_depth(
-            wires_faces,
-            skin_depth=f"{self.convert_units(skin_depth)}mm",
-            maximum_elements=None,
-            # triangulation_max_length="0.1mm",
-            layers_number=number_layers,
-            # name=None
+        
+        self.meshing_backend.assign_skin_depth(
+            faces=wires_faces,
+            skin_depth=skin_depth,
+            num_layers=number_layers
         )
 
-    def create_magnetic_simulation(self, mas: [MAS.Mas, dict], simulate=False, operating_point_index=0):
-        """Create an automatic simulation form the mas file.
+    def create_magnetic_simulation(
+        self,
+        mas: Union[MAS.Mas, dict],
+        simulate: bool = False,
+        operating_point_index: int = 0,
+        single_frequency: bool = False
+    ):
+        """
+        Create an automatic simulation from the MAS file.
 
         Parameters
         ----------
         mas : MAS.Mas, dict
-            Mas file or dict containing the information about the magnetic, its
-            inputs, and outputs.
+            MAS file or dict containing the information about the magnetic,
+            its inputs, and outputs.
         simulate : bool, optional
-            Runs the simulation and capture outputs if true. The default
-            is ``False``, 
-
-
-        Examples
-        --------
-        Import a MAS file from a json and simulate its temperature.
-        
-
-        >>> import json
-        >>> import os
-
-        >>> f = open("tests/mas_files/simple_inductor_round_column.json)
-        >>> mas_dict = json.load(f)
-
-        >>> outputs_folder = os.path.dirname(__file__) + "/outputs"
-        >>> outputs_folder = "example"
-
-        >>> project = ansyas.create_project(
-            outputs_folder=outputs_folder,
-            project_name=project_name,
-            solution_type="SteadyState",
-        )
-        >>> ansyas.set_units("meter")
-        >>> ansyas.create_magnetic_simulation(
-            mas=mas,
-            simulate=True
-        )
-
-
+            Runs the simulation and captures outputs if true. Default is False.
+        operating_point_index : int, optional
+            Index of the operating point to simulate.
         """
         if isinstance(mas, dict):
             mas = MAS.Mas.from_dict(mas)
@@ -404,13 +539,16 @@ class Ansyas:
         if self.solution_type in "SteadyState":
             core_losses = outputs[operating_point_index].coreLosses.coreLosses
             self.core_builder.assign_core_losses_as_heat_source(core_parts, core_losses)
-            self.cooling_builder.create_cooling(magnetic.core, inputs.operatingPoints[operating_point_index].conditions.cooling)
+            self.cooling_builder.create_cooling(
+                magnetic.core,
+                inputs.operatingPoints[operating_point_index].conditions.cooling
+            )
 
         self.fit()
 
         bobbin = self.bobbin_builder.create_simple_bobbin(
             bobbin=magnetic.coil.bobbin,
-            material="Plastic" if self.solution_type == "SteadyState" else "PVC plastic",  # TODO: Create material from bobbin
+            material="Plastic" if self.solution_type == "SteadyState" else "PVC plastic",
         )
 
         turns_and_terminals = self.coil_builder.create_coil(
@@ -437,7 +575,10 @@ class Ansyas:
         winding_losses = outputs[operating_point_index].windingLosses.windingLossesPerTurn
 
         if self.solution_type in "SteadyState":
-            self.coil_builder.assign_turn_losses_as_heat_source(turns_and_terminals, winding_losses)
+            self.coil_builder.assign_turn_losses_as_heat_source(
+                turns_and_terminals,
+                winding_losses
+            )
 
         if self.solution_type in ["EddyCurrent", "AC Magnetic", "Transient", "TransientAPhiFormulation"]:
             self.excitation_builder.add_excitation(
@@ -447,21 +588,29 @@ class Ansyas:
             )
 
         if self.solution_type in "SteadyState":
-            self.create_boundary_conditions(inputs.operatingPoints[operating_point_index].conditions)
+            self.create_boundary_conditions(
+                inputs.operatingPoints[operating_point_index].conditions
+            )
         else:
             self.create_boundary_region(self.padding)
 
-        self.create_setup(inputs.operatingPoints[operating_point_index].excitationsPerWinding[0].frequency)
+        self.create_setup(
+            inputs.operatingPoints[operating_point_index].excitationsPerWinding[0].frequency,
+            single_frequency=single_frequency
+        )
+        
         if self.solution_type in "SteadyState":
-            self.project.globalMeshSettings(
-                meshtype=1
-            )
+            self.meshing_backend.set_global_mesh_settings_icepak(meshtype=1)
+            # Enable radiation after setup is created
+            if hasattr(self, 'cooling_builder') and self.cooling_builder:
+                self.cooling_builder.enable_radiation()
 
-        self.fit()
+        # Skip fit() for Icepak to avoid gRPC issues - not essential for simulation
+        if self.solution_type not in "SteadyState":
+            self.fit()
 
         if simulate:
             self.analyze()
             self.outputs_extractor.get_results()
 
         self.save()
-        self.project.release_desktop(close_projects=False, close_desktop=False)

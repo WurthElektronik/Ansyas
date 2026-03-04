@@ -5,8 +5,12 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 
-import mas_autocomplete
-from ansyas import Ansyas
+try:
+    from . import mas_autocomplete
+    from .ansyas import Ansyas
+except ImportError:
+    import mas_autocomplete
+    from ansyas import Ansyas
 
 
 if __name__ == "__main__":
@@ -40,8 +44,9 @@ if __name__ == "__main__":
     else:
         try:
             project_name = f"{mas_dict['magnetic']['manufacturerInfo']['reference']}_{time.time()}"
-        except TypeError:
-            project_name = f"Unnamed_design_{time.time()}"
+        except (TypeError, KeyError):
+            base_name = os.path.splitext(os.path.basename(sys.argv[1]))[0]
+            project_name = f"{base_name}_{time.time()}"
 
     print("outputs_folder")
     print(outputs_folder)
@@ -62,3 +67,4 @@ if __name__ == "__main__":
         simulate=False,
         operating_point_index=operating_point_index
     )
+    project.release_desktop(close_projects=False, close_desktop=False)

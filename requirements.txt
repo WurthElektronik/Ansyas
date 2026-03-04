@@ -2,3 +2,4 @@ pyaedt
 numpy
 OpenMagneticsVirtualBuilder
 cadquery
+PyMKF
