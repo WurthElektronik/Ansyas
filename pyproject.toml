@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "Ansyas"
-version = "0.9.14"
+version = "0.9.16"
 description = 'Ansyas automates the 3D simulation in Ansys Maxwell and Icepak of any magnetic component described in MAS language.'
 readme = "README.md"
 requires-python = ">=3.8"
@@ -32,6 +32,16 @@ dependencies = [
   "PyMKF",
 ]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "output/",
+  "tests/output/",
+  "*.aedt",
+  "*.lock",
+  "nul",
+  ".coverage",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/Ansyas"]
 artifacts = []
@@ -41,6 +51,7 @@ exclude = [
   "**/*.aedt",
   "**/*.lock",
   "**/__pycache__/**/*",
+  "**/nul",
 ]
 
 [project.urls]

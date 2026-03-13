@@ -8,3 +8,8 @@ wheelhouse/
 *.step
 *.stp
 *.stl
+nul
+*.aedt
+*.lock
+output/
+.coverage

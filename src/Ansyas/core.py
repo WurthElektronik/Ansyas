@@ -1,4 +1,5 @@
 from typing import Optional
+
 try:
     import ansys.aedt.core as pyaedt
 except ImportError:
@@ -15,17 +16,32 @@ from OpenMagneticsVirtualBuilder.builder import Builder as ShapeBuilder  # noqa:
 
 
 class Core:
-
     def __init__(self, project, number_segments_arcs=12):
         self.project = project
         self.number_segments_arcs = number_segments_arcs
 
-    def load_material(self, material: MAS.CoreMaterial, frequency, temperature=25, magneticFieldDcBias=0):
-        # material.name = material.name.replace(' ', '')
+    def load_material(
+        self,
+        material: MAS.CoreMaterial,
+        frequency,
+        temperature=25,
+        magneticFieldDcBias=0,
+    ):
+        # Sanitize material name for use in dataset names (replace spaces and special chars)
+        sanitized_name = material.name.replace(" ", "_").replace("-", "_")
+
         aedt_material = self.project.materials.add_material(material.name)
 
-        if self.project.solution_type not in ["TransientAPhiFormulation"] and "complex" in dir(material.permeability) and "imaginary" in dir(material.permeability.complex) and "real" in dir(material.permeability.complex):
-            if isinstance(material.permeability.complex.imaginary, list) and len(material.permeability.complex.imaginary) > 1:
+        if (
+            self.project.solution_type not in ["TransientAPhiFormulation"]
+            and "complex" in dir(material.permeability)
+            and "imaginary" in dir(material.permeability.complex)
+            and "real" in dir(material.permeability.complex)
+        ):
+            if (
+                isinstance(material.permeability.complex.imaginary, list)
+                and len(material.permeability.complex.imaginary) > 1
+            ):
                 frequency_values = []
                 complex_imaginary_permeability_values = []
                 for element in material.permeability.complex.imaginary:
@@ -33,15 +49,20 @@ class Core:
                     complex_imaginary_permeability_values.append(element.value)
 
                 dataset = self.project.create_dataset(
-                    name=f"material_{material.name}_complexImaginaryPermeability",
+                    name=f"material_{sanitized_name}_complexImaginaryPermeability",
                     x=frequency_values,
                     y=complex_imaginary_permeability_values,
                     x_unit="Hz",
                     y_unit="",
                 )
             else:
-                raise AttributeError(f"Material {material.name} is missing complex permeability")
-            if isinstance(material.permeability.complex.real, list) and len(material.permeability.complex.real) > 1:
+                raise AttributeError(
+                    f"Material {material.name} is missing complex permeability"
+                )
+            if (
+                isinstance(material.permeability.complex.real, list)
+                and len(material.permeability.complex.real) > 1
+            ):
                 frequency_values = []
                 complex_real_permeability_values = []
                 for element in material.permeability.complex.real:
@@ -49,7 +70,7 @@ class Core:
                     complex_real_permeability_values.append(element.value)
 
                 dataset = self.project.create_dataset(
-                    name=f"material_{material.name}_complexRealPermeability",
+                    name=f"material_{sanitized_name}_complexRealPermeability",
                     x=frequency_values,
                     y=complex_real_permeability_values,
                     x_unit="Hz",
@@ -57,13 +78,20 @@ class Core:
                 )
 
             else:
-                raise AttributeError(f"Material {material.name} is missing complex permeability")
+                raise AttributeError(
+                    f"Material {material.name} is missing complex permeability"
+                )
 
-            aedt_material.permeability = f"sqrt(pow(pwl($material_{material.name}_complexRealPermeability, Freq), 2) + pow(pwl($material_{material.name}_complexImaginaryPermeability, Freq), 2))"
-            aedt_material.permeability = f"pwl($material_{material.name}_complexRealPermeability, Freq)"
+            aedt_material.permeability = f"sqrt(pow(pwl($material_{sanitized_name}_complexRealPermeability, Freq), 2) + pow(pwl($material_{sanitized_name}_complexImaginaryPermeability, Freq), 2))"
+            aedt_material.permeability = (
+                f"pwl($material_{sanitized_name}_complexRealPermeability, Freq)"
+            )
 
         else:
-            if isinstance(material.permeability.initial, list) and len(material.permeability.initial) > 1:
+            if (
+                isinstance(material.permeability.initial, list)
+                and len(material.permeability.initial) > 1
+            ):
                 temperature_values = []
                 initial_permeability_values = []
                 for element in material.permeability.initial:
@@ -71,12 +99,15 @@ class Core:
                     initial_permeability_values.append(element.value)
 
                 dataset = self.project.create_dataset(
-                    name=f"material_{material.name}_initialPermeability",
+                    name=f"material_{sanitized_name}_initialPermeability",
                     x=temperature_values,
-                    y=initial_permeability_values
+                    y=initial_permeability_values,
                 )
                 aedt_material.permeability.add_thermal_modifier_dataset(dataset.name)
-            elif isinstance(material.permeability.initial, list) and len(material.permeability.initial) == 1:
+            elif (
+                isinstance(material.permeability.initial, list)
+                and len(material.permeability.initial) == 1
+            ):
                 conductivity = material.permeability.initial[0].value
                 aedt_material.conductivity = conductivity
             else:
@@ -90,9 +121,9 @@ class Core:
                 conductivity_values.append(1.0 / element.value)
 
             dataset = self.project.create_dataset(
-                name=f"material_{material.name}_conductivity",
+                name=f"material_{sanitized_name}_conductivity",
                 x=temperature_values,
-                y=conductivity_values
+                y=conductivity_values,
             )
             aedt_material.conductivity.add_thermal_modifier_dataset(dataset.name)
         elif isinstance(material.resistivity, list) and len(material.resistivity) == 1:
@@ -101,13 +132,24 @@ class Core:
         else:
             raise AttributeError(f"Material {material.name} is missing resistivity")
 
+        if (
+            not hasattr(material, "volumetricLosses")
+            or material.volumetricLosses is None
+            or "default" not in material.volumetricLosses
+        ):
+            # No volumetric losses defined, skip this section
+            aedt_material.mass_density = material.density
+            return
+
         for methodData in material.volumetricLosses["default"]:
             if methodData.method == MAS.VolumetricCoreLossesMethodType.lossFactor:
                 closest_temperature = math.inf
                 target_temperature = 25
                 initial_permeability = None
                 for point in material.permeability.initial:
-                    if (point.temperature - target_temperature) < (closest_temperature - target_temperature):
+                    if (point.temperature - target_temperature) < (
+                        closest_temperature - target_temperature
+                    ):
                         closest_temperature = point.temperature
                         initial_permeability = point.value
 
@@ -118,26 +160,38 @@ class Core:
                     loss_factor_values.append(element.value * initial_permeability)
 
                 dataset = self.project.create_dataset(
-                    name=f"material_{material.name}_lossFactor",
+                    name=f"material_{sanitized_name}_lossFactor",
                     x=frequency_values,
-                    y=loss_factor_values
+                    y=loss_factor_values,
                 )
-                aedt_material.magnetic_loss_tangent = f"pwl($material_{material.name}_lossFactor, Freq)"
+                aedt_material.magnetic_loss_tangent = (
+                    f"pwl($material_{sanitized_name}_lossFactor, Freq)"
+                )
                 break
 
             if methodData.method == MAS.VolumetricCoreLossesMethodType.steinmetz:
                 for steinmetz_range in methodData.ranges:
-                    if steinmetz_range.minimumFrequency <= frequency <= steinmetz_range.maximumFrequency:
+                    if (
+                        steinmetz_range.minimumFrequency
+                        <= frequency
+                        <= steinmetz_range.maximumFrequency
+                    ):
                         steinmetz_coefficients = steinmetz_range.to_dict()
                         break
                 aedt_material.set_power_ferrite_coreloss(
                     cm=steinmetz_coefficients["k"],
                     x=steinmetz_coefficients["alpha"],
-                    y=steinmetz_coefficients["beta"]
+                    y=steinmetz_coefficients["beta"],
                 )
         aedt_material.mass_density = material.density
 
-    def import_core(self, step_path: str = None, core: Optional[MAS.MagneticCore] = None, operating_point: Optional[MAS.OperatingPoint] = None, name="core"):
+    def import_core(
+        self,
+        step_path: str = None,
+        core: Optional[MAS.MagneticCore] = None,
+        operating_point: Optional[MAS.OperatingPoint] = None,
+        name="core",
+    ):
 
         temperature = operating_point.conditions.ambientTemperature
         magneticFieldDcBias = 0
@@ -145,35 +199,49 @@ class Core:
 
         self.load_material(
             material=core.functionalDescription.material,
-            frequency=frequency, 
-            temperature=temperature, 
-            magneticFieldDcBias=magneticFieldDcBias
+            frequency=frequency,
+            temperature=temperature,
+            magneticFieldDcBias=magneticFieldDcBias,
         )
 
         if step_path is None and core is not None:
-            step_path, obj_path = ShapeBuilder("CadQuery").get_core(project_name=f"core_{core.name}",
-                                                                    geometrical_description=[x.to_dict() for x in core.geometricalDescription],
-                                                                    output_path=os.path.abspath(os.path.dirname(__file__) + "/outputs/"))
+            step_path, obj_path = ShapeBuilder("CadQuery").get_core(
+                project_name=f"core_{core.name}",
+                geometrical_description=[
+                    x.to_dict() for x in core.geometricalDescription
+                ],
+                output_path=os.path.abspath(os.path.dirname(__file__) + "/outputs/"),
+            )
 
         self.project.modeler.import_3d_cad(
-            input_file=step_path.replace("/", os.sep),
-            healing=True
+            input_file=step_path.replace("/", os.sep), healing=True
         )
 
-        core_parts = [self.project.modeler.get_object_from_name(x) for x in self.project.modeler.get_objects_w_string("core_part")]
+        core_parts = [
+            self.project.modeler.get_object_from_name(x)
+            for x in self.project.modeler.get_objects_w_string("core_part")
+        ]
         if len(core_parts) == 0:
-            core_parts = [self.project.modeler.get_object_from_name(x) for x in self.project.modeler.get_objects_w_string("Piece")]
+            core_parts = [
+                self.project.modeler.get_object_from_name(x)
+                for x in self.project.modeler.get_objects_w_string("Piece")
+            ]
         if len(core_parts) == 0:
-            core_parts = [self.project.modeler.get_object_from_name(x) for x in self.project.modeler.get_objects_w_string("STEP")]
+            core_parts = [
+                self.project.modeler.get_object_from_name(x)
+                for x in self.project.modeler.get_objects_w_string("STEP")
+            ]
         if len(core_parts) == 0:
-            core_parts = [self.project.modeler.get_object_from_name(x) for x in self.project.modeler.get_objects_w_string("core")]
+            core_parts = [
+                self.project.modeler.get_object_from_name(x)
+                for x in self.project.modeler.get_objects_w_string("core")
+            ]
         if len(core_parts) == 0:
             raise ImportError("Core not found or not imported")
 
         for core_part_index, core_part in enumerate(core_parts):
             self.project.assign_material(
-                assignment=core_part,
-                material=core.functionalDescription.material.name
+                assignment=core_part, material=core.functionalDescription.material.name
             )
             core_part.color = ansyas_utils.color_ferrite
             if name is not None:
@@ -184,21 +252,17 @@ class Core:
 
         if self.project.solution_type in ["EddyCurrent", "AC Magnetic", "Transient"]:
             self.project.set_core_losses(
-                assignment=[x.name for x in core_parts],
-                core_loss_on_field=True
+                assignment=[x.name for x in core_parts], core_loss_on_field=True
             )
         if self.project.solution_type == "Electrostatic":
-
             self.project.assign_floating(
                 assignment=[x.name for x in core_parts],
                 charge_value=0,
-                name="FloatingCore"
+                name="FloatingCore",
             )
         if self.project.solution_type == "SteadyState":
-
             self.project.assign_surface_material(
-                obj=[x.name for x in core_parts],
-                mat="Steel-oxidised-surface"
+                obj=[x.name for x in core_parts], mat="Steel-oxidised-surface"
             )
 
         if core.functionalDescription.type == MAS.CoreType.toroidal:
@@ -219,5 +283,5 @@ class Core:
                 assignment=[part.name],
                 thermal_condition="Total Power",
                 assignment_value=f"{part_losses}W",
-                boundary_name=f"{part.name}_losses"
+                boundary_name=f"{part.name}_losses",
             )
