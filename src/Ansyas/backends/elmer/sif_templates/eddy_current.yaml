@@ -1,0 +1,65 @@
+# Elmer SIF template for Eddy Current (AC Magnetic) simulations
+# Used by ElmerSolverBackend for MagnetoDynamics harmonic solver
+
+simulation:
+  Simulation Type: Steady State
+  Coordinate System: Cartesian 3D
+  Steady State Max Iterations: 1
+  Output Intervals: 1
+
+solvers:
+  MagnetoDynamics:
+    Equation: MgDyn
+    Procedure: '"MagnetoDynamics" "WhitneyAVHarmonicSolver"'
+    Variable: "AV[AV re:1 AV im:1]"
+    Linear System Solver: Iterative
+    Linear System Iterative Method: BiCGStabl
+    Linear System Max Iterations: 5000
+    Linear System Convergence Tolerance: 1.0e-8
+    Linear System Preconditioning: ILU2
+    Linear System Residual Output: 20
+    BiCGStabl polynomial degree: 4
+    Steady State Convergence Tolerance: 1.0e-5
+    Optimize Bandwidth: True
+    
+  MgDynCalcFields:
+    Equation: MgDynCalcFields
+    Procedure: '"MagnetoDynamics" "MagnetoDynamicsCalcFields"'
+    Calculate Magnetic Field Strength: True
+    Calculate Magnetic Flux Density: True
+    Calculate Joule Heating: True
+    Calculate Current Density: True
+    Calculate Electric Field: True
+    Calculate Nodal Forces: True
+    Calculate Maxwell Stress: False
+    Steady State Convergence Tolerance: 1.0e-5
+    
+  ResultOutput:
+    Equation: ResultOutput
+    Procedure: '"ResultOutputSolve" "ResultOutputSolver"'
+    Output File Name: results
+    Output Format: vtu
+    Vtu Format: True
+    Binary Output: True
+    Single Precision: True
+    Save Geometry IDs: True
+
+materials:
+  air:
+    Relative Permeability: 1.0
+    Relative Permittivity: 1.0
+    Electric Conductivity: 0.0
+    
+  copper:
+    Relative Permeability: 0.999994
+    Relative Permittivity: 1.0
+    Electric Conductivity: 5.96e7
+    
+  ferrite:
+    Relative Permeability: 2000.0
+    Relative Permittivity: 12.0
+    Electric Conductivity: 0.01
+
+boundary_conditions:
+  magnetic_insulation:
+    AV {e}: 0.0

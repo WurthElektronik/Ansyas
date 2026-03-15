@@ -7,14 +7,33 @@ using pluggable backends for geometry, meshing, solving, and excitation.
 The architecture allows swapping backends:
 - Geometry: Ansys (PyAEDT), CadQuery, etc.
 - Meshing: Ansys, Gmsh, etc.
-- Solver: Ansys Maxwell/Icepak, MFEM, etc.
+- Solver: Ansys Maxwell/Icepak, Elmer, MFEM, etc.
 """
 
 import os
 import logging
+import tempfile
 from typing import Optional, List, Dict, Any, Union
 
 logger = logging.getLogger(__name__)
+
+# Backend availability flags
+HAS_ANSYS = False
+HAS_ELMER = False
+
+try:
+    from ansys.aedt.core import Maxwell3d, Icepak
+    HAS_ANSYS = True
+except ImportError:
+    pass
+
+try:
+    from pyelmer import elmer
+    import gmsh
+    import cadquery
+    HAS_ELMER = True
+except ImportError:
+    pass
 
 try:
     from . import MAS_models as MAS
@@ -153,12 +172,28 @@ class Ansyas:
         self.project_path = None
         self.project_name = None
         self.solution_type = None
+        
+        # Elmer-specific state
+        self._sim_dir = None
+        self._elmer_postprocessor = None
+        self._is_elmer = False
 
-    def _initialize_backends(self, project):
-        """Initialize backends with the created project."""
-        # For now, we only have Ansys backends implemented
-        # Future: use BackendRegistry to get the appropriate backend class
-
+    def _initialize_backends(self, project=None, sim_dir: str = None):
+        """
+        Initialize backends with the created project or simulation directory.
+        
+        For Ansys backends, `project` is the PyAEDT project instance.
+        For Elmer backends, `sim_dir` is the simulation directory path.
+        """
+        backend_name = self._solver_backend_name.lower()
+        
+        if backend_name == "elmer":
+            self._initialize_elmer_backends(sim_dir)
+        else:
+            self._initialize_ansys_backends(project)
+    
+    def _initialize_ansys_backends(self, project):
+        """Initialize Ansys backends with the PyAEDT project."""
         try:
             from .backends.ansys import (
                 AnsysGeometryBackend,
@@ -190,6 +225,58 @@ class Ansyas:
 
         self.solver_backend = AnsysSolverBackend()
         self.solver_backend.initialize(solver_type=self.solution_type, project=project)
+    
+    def _initialize_elmer_backends(self, sim_dir: str):
+        """Initialize Elmer backends for open-source FEM simulation."""
+        try:
+            from .backends.elmer import (
+                ElmerGeometryBackend,
+                ElmerMaterialBackend,
+                ElmerMeshingBackend,
+                ElmerExcitationBackend,
+                ElmerSolverBackend,
+                ElmerPostprocessor,
+            )
+        except ImportError:
+            from backends.elmer import (
+                ElmerGeometryBackend,
+                ElmerMaterialBackend,
+                ElmerMeshingBackend,
+                ElmerExcitationBackend,
+                ElmerSolverBackend,
+                ElmerPostprocessor,
+            )
+        
+        if sim_dir is None:
+            sim_dir = self._sim_dir
+        
+        # Initialize geometry backend (CadQuery + gmsh)
+        self.geometry_backend = ElmerGeometryBackend()
+        self.geometry_backend.initialize(temp_dir=sim_dir)
+        
+        # Initialize meshing backend (gmsh + ElmerGrid)
+        self.meshing_backend = ElmerMeshingBackend()
+        self.meshing_backend.initialize(sim_dir=sim_dir)
+        
+        # Solver and material/excitation backends need the pyelmer Simulation object
+        # These will be fully initialized when create_elmer_simulation() is called
+        self.solver_backend = ElmerSolverBackend()
+        self.solver_backend.initialize(
+            solver_type=self.solution_type or "EddyCurrent",
+            sim_dir=sim_dir
+        )
+        
+        # Get simulation object for material and excitation backends
+        simulation = self.solver_backend.get_simulation()
+        
+        self.material_backend = ElmerMaterialBackend()
+        self.material_backend.initialize(simulation=simulation)
+        
+        self.excitation_backend = ElmerExcitationBackend()
+        self.excitation_backend.initialize(simulation=simulation)
+        
+        # Store postprocessor for result extraction
+        self._elmer_postprocessor = ElmerPostprocessor(sim_dir=sim_dir)
 
     def fit(self):
         """Fit the view to show all objects."""
@@ -201,17 +288,131 @@ class Ansyas:
     def analyze(self):
         """Run the simulation."""
         if self.solver_backend:
-            return self.solver_backend.analyze()
+            result = self.solver_backend.analyze()
+            
+            # For Elmer, load results after analysis
+            if self._is_elmer and self._elmer_postprocessor:
+                self._elmer_postprocessor.load_results()
+            
+            return result
         elif self.project:
             self.project.analyze()
 
     def save(self):
         """Save the project."""
+        if self._is_elmer:
+            # For Elmer, write the SIF file
+            if self.solver_backend:
+                self.solver_backend.save_project()
+            return
+        
         if self.solver_backend:
             self.solver_backend.save_project()
         elif self.project:
             self.project.oeditor.CleanUpModel()
             self.project.save_project()
+    
+    def get_elmer_results(
+        self, 
+        winding_currents: List[float] = None,
+        frequency: float = 100000
+    ) -> Dict[str, Any]:
+        """
+        Get results from Elmer simulation.
+        
+        Parameters
+        ----------
+        winding_currents : List[float], optional
+            List of currents for each winding (A). Required for
+            inductance/resistance calculation.
+        frequency : float, optional
+            Simulation frequency (Hz). Default is 100kHz.
+        
+        Returns
+        -------
+        Dict
+            Dictionary containing simulation results:
+            - inductance_matrix: Self/mutual inductance values
+            - resistance_matrix: AC resistance values
+            - magnetic_energy: Stored magnetic energy (J)
+            - joule_losses: Winding losses (W)
+        """
+        if not self._is_elmer:
+            raise RuntimeError("get_elmer_results() is only available for Elmer simulations")
+        
+        if self._elmer_postprocessor is None:
+            raise RuntimeError("Postprocessor not initialized. Run analyze() first.")
+        
+        results = {}
+        
+        # Get basic field quantities
+        try:
+            magnetic_energy = self._elmer_postprocessor.calculate_magnetic_energy()
+            results["magnetic_energy"] = magnetic_energy
+        except Exception as e:
+            logger.warning(f"Could not calculate magnetic energy: {e}")
+        
+        try:
+            joule_losses = self._elmer_postprocessor.calculate_joule_losses()
+            results["joule_losses"] = joule_losses
+        except Exception as e:
+            logger.warning(f"Could not calculate Joule losses: {e}")
+        
+        # Calculate inductance and resistance if currents are provided
+        if winding_currents:
+            try:
+                l_matrix = self._elmer_postprocessor.calculate_inductance_matrix(winding_currents)
+                results["inductance_matrix"] = l_matrix
+            except Exception as e:
+                logger.warning(f"Could not calculate inductance matrix: {e}")
+            
+            try:
+                r_matrix = self._elmer_postprocessor.calculate_resistance_matrix(winding_currents)
+                results["resistance_matrix"] = r_matrix
+            except Exception as e:
+                logger.warning(f"Could not calculate resistance matrix: {e}")
+            
+            # Single winding convenience values
+            if len(winding_currents) == 1:
+                try:
+                    results["inductance"] = self._elmer_postprocessor.calculate_inductance(
+                        winding_currents[0]
+                    )
+                    results["resistance"] = self._elmer_postprocessor.calculate_resistance(
+                        winding_currents[0]
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not calculate single-winding L/R: {e}")
+        
+        return results
+    
+    def get_elmer_impedance_output(
+        self,
+        frequencies: List[float],
+        currents: List[float]
+    ) -> Any:
+        """
+        Get full MAS-format impedance output.
+        
+        Parameters
+        ----------
+        frequencies : List[float]
+            List of frequencies (Hz).
+        currents : List[float]
+            List of winding currents (A).
+            
+        Returns
+        -------
+        MAS.ImpedanceOutput
+            Full impedance output in MAS format.
+        """
+        if not self._is_elmer:
+            raise RuntimeError("Only available for Elmer simulations")
+        
+        if self._elmer_postprocessor is None:
+            raise RuntimeError("Postprocessor not initialized")
+        
+        return self._elmer_postprocessor.get_impedance_output(frequencies, currents)
 
     def set_units(self, units: str):
         """
@@ -344,12 +545,90 @@ class Ansyas:
 
         return self.project
 
+    def create_elmer_project(
+        self,
+        outputs_folder: str,
+        project_name: str,
+        solution_type: str = "EddyCurrent",
+    ):
+        """
+        Create an Elmer simulation project (open-source alternative to Ansys).
+        
+        This method sets up the simulation directory and initializes Elmer backends
+        without requiring an Ansys license.
+        
+        Parameters
+        ----------
+        outputs_folder : str
+            Path to store the output files.
+        project_name : str
+            Name of the project (used for directory naming).
+        solution_type : str, optional
+            Solution type. Supported: "EddyCurrent", "AC Magnetic", "Magnetostatic",
+            "Transient", "TransientAPhiFormulation", "SteadyState", "Thermal",
+            "Electrostatic". Default is "EddyCurrent".
+            
+        Returns
+        -------
+        str
+            Path to the simulation directory.
+        """
+        if not HAS_ELMER:
+            raise ImportError(
+                "Elmer dependencies not found. Install with: "
+                "pip install ansyas[elmer] or pip install pyelmer gmsh cadquery"
+            )
+        
+        # Sanitize project name
+        project_name = (
+            project_name.replace(" ", "_")
+            .replace(",", "_")
+            .replace(":", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
+        
+        # Create simulation directory
+        self.project_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), outputs_folder
+        )
+        os.makedirs(self.project_path, exist_ok=True)
+        
+        self._sim_dir = os.path.join(self.project_path, project_name)
+        os.makedirs(self._sim_dir, exist_ok=True)
+        
+        self.project_name = project_name
+        self.solution_type = solution_type
+        self._is_elmer = True
+        
+        # Initialize Elmer backends
+        self._initialize_backends(sim_dir=self._sim_dir)
+        
+        logger.info(f"Created Elmer project in: {self._sim_dir}")
+        return self._sim_dir
+
     def get_project_location(self) -> str:
         """Get the project file location."""
+        if self._is_elmer:
+            return self._sim_dir
         return self.project_name
 
     def create_builders(self, magnetic: MAS.Magnetic):
-        """Create domain-specific builders for core, coil, etc."""
+        """
+        Create domain-specific builders for core, coil, etc.
+        
+        Note: For Elmer backend, the existing builders (Core, Coil, etc.) are
+        Ansys-specific. Use create_elmer_magnetic_simulation() for Elmer or
+        build geometry directly with the geometry_backend.
+        """
+        if self._is_elmer:
+            logger.warning(
+                "Domain builders (Core, Coil, Bobbin) are Ansys-specific. "
+                "For Elmer simulations, use create_elmer_magnetic_simulation() "
+                "or build geometry directly with geometry_backend."
+            )
+            return
+        
         try:
             from . import core as core_builder
             from . import bobbin as bobbin_builder
@@ -649,3 +928,147 @@ class Ansyas:
             self.outputs_extractor.get_results()
 
         self.save()
+
+    def create_elmer_magnetic_simulation(
+        self,
+        mas: Union[MAS.Mas, dict],
+        simulate: bool = False,
+        operating_point_index: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Create an Elmer-based magnetic simulation from MAS data.
+        
+        This method provides a simplified workflow for Elmer simulations,
+        building geometry using CadQuery and gmsh rather than the Ansys-specific
+        domain builders.
+        
+        Parameters
+        ----------
+        mas : MAS.Mas or dict
+            MAS file containing magnetic component description.
+        simulate : bool, optional
+            Run simulation immediately if True. Default is False.
+        operating_point_index : int, optional
+            Index of operating point to simulate. Default is 0.
+            
+        Returns
+        -------
+        Dict
+            Simulation results if simulate=True, otherwise empty dict.
+        """
+        if not self._is_elmer:
+            raise RuntimeError(
+                "create_elmer_magnetic_simulation() requires Elmer backend. "
+                "Use geometry_backend='elmer', solver_backend='elmer' in constructor "
+                "and call create_elmer_project() instead of create_project()."
+            )
+        
+        if isinstance(mas, dict):
+            mas = MAS.Mas.from_dict(mas)
+        
+        magnetic = mas.magnetic
+        inputs = mas.inputs
+        operating_point = inputs.operatingPoints[operating_point_index]
+        
+        # Get frequency and excitation
+        excitation = operating_point.excitationsPerWinding[0]
+        frequency = excitation.frequency
+        current = excitation.current.processed.rms if hasattr(excitation.current, 'processed') else 1.0
+        
+        # TODO: Build geometry from MAS using geometry_backend
+        # For now, we provide a template for manual geometry creation
+        # Full implementation would import core/coil shapes using OpenMagneticsVirtualBuilder
+        
+        logger.info(f"Elmer simulation setup for {magnetic.manufacturer_info.name if hasattr(magnetic, 'manufacturer_info') else 'component'}")
+        logger.info(f"Frequency: {frequency} Hz, Current: {current} A")
+        
+        # Configure solver for this frequency
+        setup_config = SolverSetup(
+            solver_type=self.solution_type,
+            frequency=frequency,
+            max_passes=self.maximum_passes,
+            max_error_percent=self.maximum_error_percent,
+            refinement_percent=self.refinement_percent,
+        )
+        self.solver_backend.create_setup(setup_config)
+        
+        results = {}
+        
+        if simulate:
+            self.analyze()
+            
+            # Get winding currents for result extraction
+            winding_currents = []
+            for exc in operating_point.excitationsPerWinding:
+                if hasattr(exc.current, 'processed'):
+                    winding_currents.append(exc.current.processed.rms)
+                else:
+                    winding_currents.append(1.0)
+            
+            results = self.get_elmer_results(
+                winding_currents=winding_currents,
+                frequency=frequency
+            )
+        
+        self.save()
+        return results
+    
+    def generate_elmer_mesh(self) -> bool:
+        """
+        Generate mesh for Elmer simulation using gmsh.
+        
+        Call this after creating geometry to generate the mesh
+        and convert it to Elmer format.
+        
+        Returns
+        -------
+        bool
+            True if mesh generation succeeded.
+        """
+        if not self._is_elmer:
+            raise RuntimeError("generate_elmer_mesh() requires Elmer backend")
+        
+        if self.meshing_backend is None:
+            raise RuntimeError("Meshing backend not initialized")
+        
+        # Generate mesh
+        success = self.meshing_backend.generate_mesh()
+        
+        if success:
+            # Convert to Elmer format
+            self.meshing_backend.convert_to_elmer()
+        
+        return success
+    
+    def visualize_elmer_results(
+        self,
+        field: str = "magnetic flux density",
+        save_path: str = None
+    ) -> Any:
+        """
+        Visualize Elmer simulation results using PyVista.
+        
+        Parameters
+        ----------
+        field : str, optional
+            Field to visualize. Options: "magnetic flux density", 
+            "current density", "magnetic vector potential", "temperature".
+            Default is "magnetic flux density".
+        save_path : str, optional
+            Path to save screenshot. If None, displays interactively.
+            
+        Returns
+        -------
+        pyvista.Plotter or None
+            PyVista plotter object if available, otherwise None.
+        """
+        if not self._is_elmer:
+            raise RuntimeError("visualize_elmer_results() requires Elmer backend")
+        
+        if self._elmer_postprocessor is None:
+            raise RuntimeError("Postprocessor not initialized")
+        
+        return self._elmer_postprocessor.visualize_field(
+            field_name=field,
+            save_path=save_path
+        )

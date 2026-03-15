@@ -146,3 +146,162 @@ pytest tests/test_integration_ansys.py --run-ansys -v
 # Run specific test
 pytest tests/test_integration_ansys.py::TestAnsysIntegration::test_05_cmc_impedance --run-ansys -v
 ```
+
+## ElmerFEM Backend (Open-Source Alternative)
+
+### Overview
+ElmerFEM backend provides an open-source alternative to Ansys Maxwell for magnetostatic simulations.
+Uses MVB (OpenMagneticsVirtualBuilder) for geometry and gmsh for meshing.
+
+### Key Discovery: Closed Coil Excitation
+For **concentric cores (PQ, E-cores)** where turns are closed loops around the central column:
+- **DON'T** use simple tangential current density (gives ~31% of expected inductance)
+- **DO** use Elmer's **CoilSolver** with `Coil Closed = Logical True`
+
+The CoilSolver computes a divergence-free current density field that properly handles closed loops,
+similar to how Ansys requires a cut surface for excitation in closed coils.
+
+### Validation Results
+| Turns | Analytical | Elmer | Error |
+|-------|------------|-------|-------|
+| 1 | 8.72 µH | 8.67 µH | 0.6% |
+| 4 | 139.54 µH | 138.27 µH | 0.9% |
+
+**Target achieved**: <25% error (actual: <1% error)
+
+### Running Elmer Validation
+```bash
+# Set up Elmer path
+export PATH="$HOME/elmer/install/bin:$PATH"
+
+# Run validation with CoilSolver (recommended for closed coils)
+python3 tests/validate_elmer_inductance.py examples/concentric_transformer.json -o output/test -t 4 -m coilsolver
+
+# Options:
+#   -t N         Number of turns to simulate
+#   -m METHOD    "coilsolver" (for closed coils) or "tangential" (for open coils)
+#   -u MU_R      Override core permeability (default: auto-detect from MAS)
+```
+
+### Elmer Backend Files
+```
+src/Ansyas/backends/elmer/
+├── geometry.py       # ElmerGeometryBackend
+├── meshing.py        # ElmerMeshingBackend
+├── material.py       # ElmerMaterialBackend
+├── excitation.py     # ElmerExcitationBackend
+├── solver.py         # ElmerSolverBackend
+├── postprocess.py    # ElmerPostprocessor
+└── mas_processor.py  # MAS→Elmer workflow
+
+tests/
+└── validate_elmer_inductance.py  # Main validation script with CoilSolver
+```
+
+### Technical Details
+
+**CoilSolver Configuration** (for closed coils):
+```
+Component 1
+  Name = String "Coil"
+  Coil Type = String "test"
+  Master Bodies(1) = Integer <turn_body_id>
+  Desired Current Density = Real <J_value>
+  Coil Normal(3) = Real 0.0 0.0 1.0
+End
+
+Solver 1
+  Equation = "CoilSolver"
+  Procedure = "CoilSolver" "CoilSolver"
+  Coil Closed = Logical True
+  Narrow Interface = Logical True
+  ...
+End
+
+Solver 2
+  Equation = MGDynamics
+  Use Elemental CoilCurrent = Logical True
+  ...
+End
+```
+
+**Material Permeability**: Auto-detected from MAS file using PyMKF's initial permeability data
+- Example: 3C97 has µᵣ = 3313 at 25°C
+
+### Complete Workflow: MAS → MVB → Elmer
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   MAS JSON      │────▶│     PyMKF       │────▶│      MVB        │
+│  (component)    │     │  (materials)    │     │   (geometry)    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │
+                                                        ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  ElmerSolver    │◀────│   ElmerGrid     │◀────│     gmsh        │
+│  (FEM solve)    │     │ (mesh convert)  │     │   (meshing)     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │
+        ▼
+┌─────────────────┐
+│  Results (VTU)  │
+│  L = 2W/I²      │
+└─────────────────┘
+```
+
+### Key Integration Points
+
+1. **MAS → PyMKF**: Get material permeability
+   ```python
+   mat_data = PyMKF.get_material_data("3C97")
+   mu_r = mat_data['permeability']['initial'][0]['value']  # at 25°C
+   ```
+
+2. **MAS → MVB**: Build 3D geometry
+   ```python
+   from OpenMagneticsVirtualBuilder.builder import Builder
+   builder = Builder()
+   step_path, _ = builder.get_magnetic(magnetic_data, output_path=path, export_files=True)
+   ```
+
+3. **MVB → gmsh**: Import and mesh
+   ```python
+   gmsh.model.occ.importShapes(step_path)
+   gmsh.model.occ.fragment(...)  # Conformal mesh
+   gmsh.model.addPhysicalGroup(3, core_vols, tag=1, name="core")
+   ```
+
+4. **gmsh → Elmer**: Convert mesh
+   ```bash
+   ElmerGrid 14 2 mesh.msh -autoclean -scale 0.001 0.001 0.001
+   ```
+
+5. **Elmer → Results**: Solve and extract inductance
+   ```python
+   # Parse Elmer output for electromagnetic energy
+   energy = parse_elmer_output("ElectroMagnetic Field Energy:")
+   inductance = 2 * energy / current**2
+   ```
+
+### Visualizing Results
+
+Results are saved as VTU files viewable in ParaView:
+
+```bash
+# Open results
+paraview output/test_coilsolver_4turn/mesh/results_t0001.vtu
+```
+
+Available fields:
+- `magnetic flux density e` - B-field (T)
+- `magnetic field strength e` - H-field (A/m)
+- `current density e` - J-field (A/m²)
+- `coilcurrent e` - CoilSolver computed current
+
+### Detailed Documentation
+
+See `docs/ELMER_INTEGRATION.md` for complete technical documentation including:
+- Architecture diagrams
+- SIF file templates
+- Troubleshooting guide
+- Comparison with Ansys Maxwell

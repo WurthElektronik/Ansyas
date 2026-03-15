@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "Ansyas"
-version = "0.9.16"
-description = 'Ansyas automates the 3D simulation in Ansys Maxwell and Icepak of any magnetic component described in MAS language.'
+version = "0.9.17"
+description = 'Ansyas automates the 3D FEM simulation in Ansys Maxwell/Icepak or Elmer FEM of any magnetic component described in MAS language.'
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
-keywords = []
+keywords = ["fem", "simulation", "magnetics", "elmer", "ansys", "maxwell"]
 authors = [
   { name="Alfonso Martinez", email="Alfonso.Martinez@we-online.com" },
 ]
@@ -26,10 +26,35 @@ classifiers = [
 ]
 dependencies = [
   "cadquery",
-  "pyaedt",
   "OpenMagneticsVirtualBuilder",
   "numpy",
   "PyMKF",
+]
+
+[project.optional-dependencies]
+# Ansys backend (commercial license required)
+ansys = [
+  "pyaedt>=0.9.0",
+]
+# Elmer backend (open-source, no license required)
+elmer = [
+  "pyelmer>=1.2.0",
+  "gmsh>=4.11.0",
+  "meshio>=5.0.0",
+  "pyvista>=0.40.0",
+]
+# All backends
+all = [
+  "pyaedt>=0.9.0",
+  "pyelmer>=1.2.0",
+  "gmsh>=4.11.0",
+  "meshio>=5.0.0",
+  "pyvista>=0.40.0",
+]
+# Development dependencies
+dev = [
+  "pytest>=7.0.0",
+  "pytest-cov>=4.0.0",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -67,6 +92,7 @@ python_functions = ["test_*"]
 markers = [
     "integration: marks tests as integration tests (require external resources)",
     "ansys: marks tests that require Ansys AEDT license",
+    "elmer: marks tests that require Elmer FEM installation",
     "slow: marks tests as slow running",
 ]
 filterwarnings = [
@@ -74,4 +100,5 @@ filterwarnings = [
     "ignore::DeprecationWarning:ansys.aedt.core.emit_core.*:",
     "ignore::DeprecationWarning:cadquery.*:",
     "ignore::DeprecationWarning:ezdxf.*:",
+    "ignore::DeprecationWarning:pyelmer.*:",
 ]

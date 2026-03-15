@@ -1,0 +1,61 @@
+# Elmer SIF template for Thermal (Heat Transfer) simulations
+# Used by ElmerSolverBackend for HeatSolver
+
+simulation:
+  Simulation Type: Steady State
+  Coordinate System: Cartesian 3D
+  Steady State Max Iterations: 1
+  Output Intervals: 1
+
+solvers:
+  HeatSolver:
+    Equation: Heat
+    Procedure: '"HeatSolve" "HeatSolver"'
+    Variable: Temperature
+    Linear System Solver: Iterative
+    Linear System Iterative Method: BiCGStab
+    Linear System Max Iterations: 1000
+    Linear System Convergence Tolerance: 1.0e-8
+    Linear System Preconditioning: ILU1
+    Steady State Convergence Tolerance: 1.0e-5
+    Stabilize: True
+    Optimize Bandwidth: True
+    
+  ResultOutput:
+    Equation: ResultOutput
+    Procedure: '"ResultOutputSolve" "ResultOutputSolver"'
+    Output File Name: results
+    Output Format: vtu
+    Vtu Format: True
+    Binary Output: True
+    Single Precision: True
+    Save Geometry IDs: True
+
+materials:
+  air:
+    Density: 1.205
+    Heat Capacity: 1005.0
+    Heat Conductivity: 0.0257
+    
+  copper:
+    Density: 8960.0
+    Heat Capacity: 385.0
+    Heat Conductivity: 401.0
+    
+  ferrite:
+    Density: 4800.0
+    Heat Capacity: 750.0
+    Heat Conductivity: 4.0
+    
+  aluminum:
+    Density: 2700.0
+    Heat Capacity: 897.0
+    Heat Conductivity: 237.0
+
+boundary_conditions:
+  fixed_temperature:
+    Temperature: 293.15  # 20°C
+    
+  convection:
+    Heat Transfer Coefficient: 10.0
+    External Temperature: 293.15
