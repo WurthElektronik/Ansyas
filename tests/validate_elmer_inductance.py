@@ -58,24 +58,25 @@ except ImportError:
 class TurnInfo:
     """Information about a single turn."""
     name: str
-    radius: float  # Distance from Z-axis (mm)
+    radius: float  # Distance from axis (mm) - Z-axis for concentric, Y-axis for toroidal
     z_position: float  # Z coordinate (mm)
     cross_section_area: float  # mm^2
     orientation: str  # 'clockwise' or 'counterclockwise'
     winding: str  # 'Primary', 'Secondary', etc.
+    x_position: float = 0.0  # X coordinate (mm) - for toroidal geometry
 
 
 def load_mas_file(mas_file: str) -> Dict:
-    """Load MAS file and validate it has required fields.
+    """Load MAS file and validate it has required processed data.
     
     MAS files must have turnsDescription and geometricalDescription.
-    Files with only functionalDescription must be pre-processed/wound
-    before using this validation script.
+    Use PyMKF tools or OpenMagnetics web interface to process files
+    that only have functionalDescription.
     """
     with open(mas_file) as f:
         data = json.load(f)
     
-    # Validate required fields
+    # Check if file has required processed data
     magnetic = data.get('magnetic', data)
     coil = magnetic.get('coil', {})
     core = magnetic.get('core', {})
@@ -84,14 +85,16 @@ def load_mas_file(mas_file: str) -> Dict:
         raise ValueError(
             f"MAS file missing 'turnsDescription' in coil. "
             f"File has functionalDescription with {len(coil.get('functionalDescription', []))} windings. "
-            f"MAS file must be wound first (use PyMKF or MAS tools to generate turnsDescription)."
+            f"Use PyMKF or OpenMagnetics web tools to wind the coil first."
         )
     
     if not core.get('geometricalDescription'):
         raise ValueError(
             f"MAS file missing 'geometricalDescription' in core. "
-            f"Core must be processed first to generate geometrical description."
+            f"Use PyMKF or OpenMagnetics web tools to process the core first."
         )
+    
+    print(f"Loaded MAS file with {len(coil.get('turnsDescription', []))} turns")
     
     return data
 
@@ -126,8 +129,19 @@ def get_core_data(magnetic_data: Dict) -> Dict:
     return core
 
 
-def extract_turns_info(magnetic_data: Dict) -> List[TurnInfo]:
-    """Extract turn information from MAS coil data."""
+def extract_turns_info(magnetic_data: Dict, core_type: str = "concentric") -> List[TurnInfo]:
+    """Extract turn information from MAS coil data.
+    
+    For concentric cores (E, PQ, etc.):
+        - coordinates[0] = radial position (from center column)
+        - coordinates[1] = height position (along Z)
+    
+    For toroidal cores:
+        - coordinates are in XZ plane (Y is core axis)
+        - coordinates[0] = X position
+        - coordinates[1] = Z position  
+        - radius = sqrt(x² + z²) = distance from Y axis
+    """
     coil = magnetic_data.get('coil', {})
     turns_desc = coil.get('turnsDescription', [])
     
@@ -137,9 +151,19 @@ def extract_turns_info(magnetic_data: Dict) -> List[TurnInfo]:
         dims = turn.get('dimensions', [1e-3, 1e-3])
         shape = turn.get('crossSectionalShape', 'round')
         
-        # Coordinates are [radius, z] in meters
-        radius = coords[0] * 1000  # Convert to mm
-        z_pos = coords[1] * 1000 if len(coords) > 1 else 0
+        if core_type == "toroidal":
+            # For toroidal: coords are [x, z] in XZ plane
+            # Radial distance from Y axis (core axis)
+            x = coords[0] * 1000  # mm
+            z = coords[1] * 1000 if len(coords) > 1 else 0  # mm
+            radius = math.sqrt(x**2 + z**2)  # Distance from Y axis
+            z_pos = z  # Use Z for position identification
+            x_pos = x  # Store X for Coil Normal calculation
+        else:
+            # For concentric: coords are [radial, z]
+            radius = coords[0] * 1000  # Convert to mm
+            z_pos = coords[1] * 1000 if len(coords) > 1 else 0
+            x_pos = 0.0  # Not used for concentric
         
         # Cross-section area in mm^2
         if shape == 'round':
@@ -153,7 +177,8 @@ def extract_turns_info(magnetic_data: Dict) -> List[TurnInfo]:
             z_position=z_pos,
             cross_section_area=area,
             orientation=turn.get('orientation', 'clockwise'),
-            winding=turn.get('winding', 'Primary')
+            winding=turn.get('winding', 'Primary'),
+            x_position=x_pos,
         ))
     
     return turns
@@ -520,8 +545,9 @@ def create_mesh_with_turns(
                         bobbin_tags.append(tag)
                         print(f"  Volume {tag}: UNKNOWN (vol={actual_vol:.0f}mm³) -> treat as air")
         
-        # For toroidal cores: Add air box but DON'T use fragment (causes mesh issues)
-        # Instead, use cut to subtract core+turns from air box
+        # For toroidal cores: Use fragment to create conformal mesh
+        # Note: Don't use cut() as it creates overlapping facets
+        # Note: Don't use removeAllDuplicates() as it can destroy small volumes
         if core_type == "toroidal":
             print("\nAdding air box for toroidal (required for boundary conditions)...")
             
@@ -534,35 +560,36 @@ def create_mesh_with_turns(
             )
             gmsh.model.occ.synchronize()
             
-            # Cut core and turns from air box to create the air region
+            # Fragment for conformal mesh (works better than cut for toroidal)
             all_solid_tags = [(3, tag) for tag in core_tags] + [(3, t[0]) for t in turn_tags]
-            result, _ = gmsh.model.occ.cut(
-                [(3, air_box)],   # Air box
-                all_solid_tags,   # Core + turns to subtract
-                removeObject=True,
-                removeTool=False  # Keep core and turns
-            )
+            out_dimtags, out_map = gmsh.model.occ.fragment([(3, air_box)], all_solid_tags)
             gmsh.model.occ.synchronize()
             
-            # Find the new air region (result of cut)
+            # Use fragment output map to track volumes
+            # out_map[0] = what air_box became (includes air region)
+            # out_map[1] = what core became
+            # out_map[2+] = what turns became
             new_volumes = gmsh.model.getEntities(3)
-            print(f"After adding air box: {len(new_volumes)} volumes")
+            print(f"After fragment: {len(new_volumes)} volumes")
             
-            # Re-classify volumes
+            # Re-classify volumes using the fragment map
             new_core = []
             new_air = []
             new_turns = []
+            
+            # Map original tags to new tags
+            core_new_tags = [t[1] for t in out_map[1]] if len(out_map) > 1 else []
+            turn_new_tags_list = []
+            for i in range(2, len(out_map)):
+                turn_new_tags_list.extend([t[1] for t in out_map[i]])
             
             for dim, tag in new_volumes:
                 actual_vol = gmsh.model.occ.getMass(dim, tag)
                 com = gmsh.model.occ.getCenterOfMass(dim, tag)
                 
-                # Core is ~9000 mm³, turns are ~86 mm³, air is the largest
-                if actual_vol > 10000:  # Air box is largest
-                    new_air.append(tag)
-                elif actual_vol > 1000:  # Core
+                if tag in core_new_tags:
                     new_core.append(tag)
-                elif actual_vol > 10:  # Turns
+                elif tag in turn_new_tags_list:
                     # Find matching turn by position
                     center_radial = math.sqrt(com[0]**2 + com[2]**2)
                     best_match = None
@@ -574,6 +601,8 @@ def create_mesh_with_turns(
                             best_match = turn_info
                     if best_match:
                         new_turns.append((tag, best_match))
+                elif actual_vol > 1000:  # Fallback: large volume is air
+                    new_air.append(tag)
             
             print(f"  Core: {len(new_core)}, Turns: {len(new_turns)}, Air: {len(new_air)}")
         else:
@@ -686,25 +715,15 @@ def create_mesh_with_turns(
             body_numbers["core"] = body_id
             body_id += 1
         
-        # For toroidal: ALL turn pieces go into ONE body (they form one coil)
-        # For concentric: each turn gets its own body
-        if core_type == "toroidal" and new_turns:
-            # All turn pieces in single body
-            all_turn_tags = [vol_tag for vol_tag, _ in new_turns]
-            turn_info = new_turns[0][1]  # Use first turn's info
-            gmsh.model.addPhysicalGroup(3, all_turn_tags, tag=body_id, name=turn_info.name)
-            print(f"  Added turn (all pieces): body_id={body_id}, vol_tags={all_turn_tags}, name={turn_info.name}")
+        # Each turn gets its own body for both toroidal and concentric cores
+        # This is required because each turn is a separate closed electrical loop
+        # and CoilSolver needs each loop as a separate Component
+        for vol_tag, turn_info in new_turns:
+            gmsh.model.addPhysicalGroup(3, [vol_tag], tag=body_id, name=turn_info.name)
+            print(f"  Added turn: body_id={body_id}, vol_tag={vol_tag}, name={turn_info.name}")
             body_numbers[turn_info.name] = body_id
             turn_bodies[body_id] = turn_info
             body_id += 1
-        else:
-            # Each turn gets its own body
-            for vol_tag, turn_info in new_turns:
-                gmsh.model.addPhysicalGroup(3, [vol_tag], tag=body_id, name=turn_info.name)
-                print(f"  Added turn: body_id={body_id}, vol_tag={vol_tag}, name={turn_info.name}")
-                body_numbers[turn_info.name] = body_id
-                turn_bodies[body_id] = turn_info
-                body_id += 1
         
         # Air body - needed for both toroidal and non-toroidal
         if new_air:
@@ -740,42 +759,33 @@ def create_mesh_with_turns(
         actual_min_size = min_element_size
         if core_type == "toroidal" and turns_info:
             # For toroidal turns, use fixed fine mesh sizes that work reliably
-            # The swept-pipe turn geometry requires fine mesh to avoid intersecting elements
             actual_max_size = 2.0  # Fixed value that works
             actual_min_size = 0.2  # Fixed value that works
             print(f"  Using toroidal mesh sizes: max={actual_max_size:.2f}mm, min={actual_min_size:.2f}mm")
         
         gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", actual_min_size)
-        # Use Delaunay for all cases - it works when combined with duplicate removal
-        # Frontal algorithm has issues with toroidal shapes after cut operations
-        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
+        
+        # Use HXT algorithm for toroidal (handles thin volumes better)
+        # Use Delaunay for concentric cores
+        if core_type == "toroidal":
+            gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
+        else:
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
+        
         gmsh.option.setNumber("Mesh.Optimize", 1)
         gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
-        # Very permissive tolerance for overlapping facets (important for toroidal turns)
-        gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 0.0001)
         
-        # Generate mesh in two steps:
-        # 1. Generate surface mesh
-        # 2. Remove duplicate nodes/elements (fixes overlapping facets from fragmentation)
-        # 3. Generate 3D mesh
+        # Generate mesh
+        # Note: Don't call removeDuplicateNodes/Elements for toroidal - it can destroy volumes
         print("\nGenerating mesh...")
         try:
-            # First generate surface mesh
-            gmsh.model.mesh.generate(2)
-            # Remove duplicates that can occur after OCC fragmentation
-            gmsh.model.mesh.removeDuplicateNodes()
-            gmsh.model.mesh.removeDuplicateElements()
-            # Now generate 3D mesh
             gmsh.model.mesh.generate(3)
         except Exception as e:
             print(f"Warning: Initial mesh generation failed: {e}")
             print("Retrying with coarser settings...")
             gmsh.model.mesh.clear()
             gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size * 2)
-            gmsh.model.mesh.generate(2)
-            gmsh.model.mesh.removeDuplicateNodes()
-            gmsh.model.mesh.removeDuplicateElements()
             gmsh.model.mesh.generate(3)
         
         # Verify 3D elements were created
@@ -820,6 +830,7 @@ def generate_sif_with_coil_solver(
     core_permeability: float = 2000.0,
     total_current: float = 1.0,
     num_turns: int = 1,
+    core_type: str = "concentric",
 ) -> str:
     """
     Generate SIF file using CoilSolver with Coil Closed = True.
@@ -828,11 +839,17 @@ def generate_sif_with_coil_solver(
     density for closed (toroidal) coils. The CoilSolver finds a divergence-free
     current density field that satisfies the closed loop constraint.
     
-    For PQ/E-core geometry:
+    For PQ/E-core geometry (concentric):
     - Central column is along Z-axis
     - Turns are tori around Z-axis
-    - Coil Normal should be tangential to the turn (perpendicular to r-z plane)
-      i.e., in the azimuthal direction
+    - Coil Normal = (0, 0, 1) - along Z axis
+    
+    For toroidal cores:
+    - Core is a torus with axis along Y
+    - Turns wrap around the toroidal cross-section (poloidal direction)
+    - Coil Normal should point along the major circumference direction (toroidal direction)
+    - For a turn at angle theta around the major circumference:
+      Coil Normal = (-sin(theta), 0, cos(theta)) where theta = atan2(z, x)
     """
     
     # Get coil body IDs (all turns together form one coil)
@@ -895,13 +912,35 @@ def generate_sif_with_coil_solver(
     comp_id = 1
     for body_id in coil_body_ids:
         turn_info = turn_bodies[body_id]
+        
+        # Calculate Coil Normal based on core type and turn position
+        if core_type == "toroidal":
+            # For toroidal: turn position is in XZ plane, Y is core axis
+            # The turn wraps around the toroidal cross-section (poloidal)
+            # Coil Normal should point in toroidal direction (along major circumference)
+            x = turn_info.x_position  # x in mm (stored from MAS coordinates)
+            z = turn_info.z_position  # z in mm
+            
+            # Normalize to get unit vector in XZ plane
+            r_actual = math.sqrt(x**2 + z**2) if (x**2 + z**2) > 0 else 1.0
+            
+            # Toroidal direction is tangent to major circumference
+            # At point (x, 0, z), tangent is (-z/r, 0, x/r)
+            nx = -z / r_actual
+            ny = 0.0
+            nz = x / r_actual
+            coil_normal = f"  Coil Normal(3) = Real {nx:.6f} {ny:.6f} {nz:.6f}"
+        else:
+            # For concentric (PQ, E-core): turns are around Z axis
+            coil_normal = "  Coil Normal(3) = Real 0.0 0.0 1.0"
+        
         sif_lines.extend([
             f"Component {comp_id}",
             f'  Name = String "Coil_{turn_info.name}"',
             '  Coil Type = String "test"',
             f"  Master Bodies(1) = Integer {body_id}",
             f"  Desired Current Density = Real {total_current / (turn_info.cross_section_area * 1e-6):.1f}",
-            "  Coil Normal(3) = Real 0.0 0.0 1.0",
+            coil_normal,
             "End",
             "",
         ])
@@ -1396,8 +1435,13 @@ def validate_mas_file(
     mas_data = load_mas_file(mas_file)
     magnetic_data = mas_data.get('magnetic', {})
     
-    # Get turns info
-    turns_info = extract_turns_info(magnetic_data)
+    # Detect core type (toroidal, concentric, etc.) - needed for proper coordinate handling
+    core_func_desc = magnetic_data.get('core', {}).get('functionalDescription', {})
+    core_type = core_func_desc.get('type', 'concentric')
+    print(f"Core type: {core_type}")
+    
+    # Get turns info (with correct coordinate interpretation based on core type)
+    turns_info = extract_turns_info(magnetic_data, core_type=core_type)
     print(f"\nFound {len(turns_info)} turns in MAS file")
     
     # Limit turns if needed
@@ -1416,11 +1460,6 @@ def validate_mas_file(
     
     # Calculate analytical inductance and get material permeability
     core_data = get_core_data(magnetic_data)
-    
-    # Detect core type (toroidal, concentric, etc.)
-    core_func_desc = magnetic_data.get('core', {}).get('functionalDescription', {})
-    core_type = core_func_desc.get('type', 'concentric')
-    print(f"Core type: {core_type}")
     
     # Auto-detect permeability from material if not specified
     if core_permeability is None:
@@ -1497,6 +1536,7 @@ def validate_mas_file(
                 core_permeability=core_permeability,
                 total_current=total_current,
                 num_turns=num_turns,
+                core_type=core_type,
             )
         else:
             sif_path = generate_sif_with_tangential_current(
