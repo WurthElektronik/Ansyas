@@ -12,22 +12,22 @@ import math
 # =============================================================================
 
 # Pole dimensions
-POLE_DIAMETER = 4.0        # mm - diameter of each magnetic pole
-POLE_HEIGHT = 5.0          # mm - height of poles
+POLE_DIAMETER = 4.0  # mm - diameter of each magnetic pole
+POLE_HEIGHT = 5.0  # mm - height of poles
 
 # Pole spacing
 HORIZONTAL_SPACING = 10.0  # mm - horizontal distance between pole centers
-VERTICAL_SPACING = 10.0    # mm - vertical distance between pole centers
+VERTICAL_SPACING = 10.0  # mm - vertical distance between pole centers
 
 # Plate dimensions (square plates closing the magnetic path)
-PLATE_THICKNESS = 1.0      # mm - thickness of top and bottom plates
-PLATE_MARGIN = 2.0         # mm - extra margin beyond the poles
+PLATE_THICKNESS = 1.0  # mm - thickness of top and bottom plates
+PLATE_MARGIN = 2.0  # mm - extra margin beyond the poles
 
 # Wire dimensions
-WIRE_THICKNESS = 0.5       # mm - thickness of wire (radial)
-WIRE_HEIGHT = 0.5          # mm - height of wire
-WIRE_CLEARANCE = 0.5       # mm - gap between pole surface and wire inner surface
-LAYER_CLEARANCE = 0.1      # mm - vertical gap between adjacent layers
+WIRE_THICKNESS = 0.5  # mm - thickness of wire (radial)
+WIRE_HEIGHT = 0.5  # mm - height of wire
+WIRE_CLEARANCE = 0.5  # mm - gap between pole surface and wire inner surface
+LAYER_CLEARANCE = 0.1  # mm - vertical gap between adjacent layers
 
 # Calculate Z offset between layer bottoms (wire height + clearance)
 WIRE_Z_OFFSET = WIRE_HEIGHT + LAYER_CLEARANCE  # mm - z offset between adjacent layers
@@ -35,9 +35,9 @@ WIRE_Z_OFFSET = WIRE_HEIGHT + LAYER_CLEARANCE  # mm - z offset between adjacent 
 # Center all 3 winding layers vertically within poles
 # Layers from bottom to top:
 #   1. Primary -Z layer (bottom)
-#   2. Primary +Z layer (middle)  
+#   2. Primary +Z layer (middle)
 #   3. Secondary layer (top)
-# 
+#
 # Total stack height = 3 * WIRE_HEIGHT + 2 * LAYER_CLEARANCE
 # Center of stack should align with pole center
 
@@ -72,10 +72,10 @@ WIRE_OUTER_RADIUS = WIRE_INNER_RADIUS + WIRE_THICKNESS
 WIRE_CENTER_RADIUS = (WIRE_INNER_RADIUS + WIRE_OUTER_RADIUS) / 2
 
 # Pole centers
-pole_tl = (-HORIZONTAL_SPACING/2, +VERTICAL_SPACING/2)  # Top Left
-pole_tr = (+HORIZONTAL_SPACING/2, +VERTICAL_SPACING/2)  # Top Right
-pole_bl = (-HORIZONTAL_SPACING/2, -VERTICAL_SPACING/2)  # Bottom Left
-pole_br = (+HORIZONTAL_SPACING/2, -VERTICAL_SPACING/2)  # Bottom Right
+pole_tl = (-HORIZONTAL_SPACING / 2, +VERTICAL_SPACING / 2)  # Top Left
+pole_tr = (+HORIZONTAL_SPACING / 2, +VERTICAL_SPACING / 2)  # Top Right
+pole_bl = (-HORIZONTAL_SPACING / 2, -VERTICAL_SPACING / 2)  # Bottom Left
+pole_br = (+HORIZONTAL_SPACING / 2, -VERTICAL_SPACING / 2)  # Bottom Right
 
 # =============================================================================
 # CALCULATE EXTERNAL TANGENT POINTS (BL to TR)
@@ -84,7 +84,7 @@ pole_br = (+HORIZONTAL_SPACING/2, -VERTICAL_SPACING/2)  # Bottom Right
 # Vector from BL to TR
 dx_ext = pole_tr[0] - pole_bl[0]
 dy_ext = pole_tr[1] - pole_bl[1]
-dist_ext = math.sqrt(dx_ext*dx_ext + dy_ext*dy_ext)
+dist_ext = math.sqrt(dx_ext * dx_ext + dy_ext * dy_ext)
 
 # Unit vector along the line
 ux_ext = dx_ext / dist_ext
@@ -114,12 +114,12 @@ print(f"External tangent TR: ({tangent_tr_x:.3f}, {tangent_tr_y:.3f})")
 #
 # The internal tangent line passes through the midpoint M = (0, 0).
 # Let the tangent line have angle phi from horizontal.
-# 
+#
 # The tangent line equation: y = x * tan(phi), or: -x*sin(phi) + y*cos(phi) = 0
-# 
+#
 # Distance from C1 = (-d/2, 0) to this line:
 #   |-(-d/2)*sin(phi) + 0*cos(phi)| / 1 = (d/2)*|sin(phi)|
-# 
+#
 # This must equal r:
 #   (d/2)*sin(phi) = r   (taking positive phi for upward-going tangent)
 #   sin(phi) = 2r/d
@@ -143,7 +143,7 @@ print(f"External tangent TR: ({tangent_tr_x:.3f}, {tangent_tr_y:.3f})")
 #
 # From (3): T1 - C1 = r * (normal to tangent line)
 # Normal to tangent line (unit vector): (-sin(phi), cos(phi)) or (sin(phi), -cos(phi))
-# 
+#
 # For C1 on the LEFT and tangent line going up-right through M:
 # C1 is BELOW the tangent line (since line has positive slope through origin, and C1 is at (-d/2, 0))
 # So the normal from C1 to the line points in (+sin(phi), +cos(phi)) direction? No wait...
@@ -161,7 +161,7 @@ print(f"External tangent TR: ({tangent_tr_x:.3f}, {tangent_tr_y:.3f})")
 # Distance between TL and TR centers
 dx_int = pole_tr[0] - pole_tl[0]
 dy_int = pole_tr[1] - pole_tl[1]
-dist_int = math.sqrt(dx_int*dx_int + dy_int*dy_int)
+dist_int = math.sqrt(dx_int * dx_int + dy_int * dy_int)
 
 # Angle of center-line from TL to TR
 centerline_angle = math.atan2(dy_int, dx_int)
@@ -209,8 +209,12 @@ print(f"Internal tangent TL: ({int_tangent_tl_x:.3f}, {int_tangent_tl_y:.3f})")
 print(f"Internal tangent TR: ({int_tangent_tr_x:.3f}, {int_tangent_tr_y:.3f})")
 
 # Verify: the angle from tangent point TL to tangent point TR should equal tangent_line_angle
-verify_angle = math.atan2(int_tangent_tr_y - int_tangent_tl_y, int_tangent_tr_x - int_tangent_tl_x)
-print(f"Verification - angle between tangent points: {math.degrees(verify_angle):.1f} degrees (should be {math.degrees(tangent_line_angle):.1f})")
+verify_angle = math.atan2(
+    int_tangent_tr_y - int_tangent_tl_y, int_tangent_tr_x - int_tangent_tl_x
+)
+print(
+    f"Verification - angle between tangent points: {math.degrees(verify_angle):.1f} degrees (should be {math.degrees(tangent_line_angle):.1f})"
+)
 
 # =============================================================================
 # CALCULATE EXTERNAL TANGENT POINTS (TL to BR) - top side
@@ -224,7 +228,7 @@ print(f"Verification - angle between tangent points: {math.degrees(verify_angle)
 # Vector from TL to BR
 dx_ext2 = pole_br[0] - pole_tl[0]
 dy_ext2 = pole_br[1] - pole_tl[1]
-dist_ext2 = math.sqrt(dx_ext2*dx_ext2 + dy_ext2*dy_ext2)
+dist_ext2 = math.sqrt(dx_ext2 * dx_ext2 + dy_ext2 * dy_ext2)
 
 # Unit vector along the centerline (TL to BR)
 ux_ext2 = dx_ext2 / dist_ext2
@@ -251,9 +255,13 @@ print(f"  TL tangent point: ({ext2_tangent_tl_x:.3f}, {ext2_tangent_tl_y:.3f})")
 print(f"  BR tangent point: ({ext2_tangent_br_x:.3f}, {ext2_tangent_br_y:.3f})")
 
 # Verify angle matches centerline
-ext2_verify_angle = math.atan2(ext2_tangent_br_y - ext2_tangent_tl_y, ext2_tangent_br_x - ext2_tangent_tl_x)
+ext2_verify_angle = math.atan2(
+    ext2_tangent_br_y - ext2_tangent_tl_y, ext2_tangent_br_x - ext2_tangent_tl_x
+)
 ext2_centerline_angle = math.atan2(dy_ext2, dx_ext2)
-print(f"  Verification - tangent angle: {math.degrees(ext2_verify_angle):.1f}° (should be {math.degrees(ext2_centerline_angle):.1f}°)")
+print(
+    f"  Verification - tangent angle: {math.degrees(ext2_verify_angle):.1f}° (should be {math.degrees(ext2_centerline_angle):.1f}°)"
+)
 
 # =============================================================================
 # CALCULATE INTERNAL TANGENT POINTS (BL to BR) - top of BL to bottom of BR
@@ -267,7 +275,7 @@ print(f"  Verification - tangent angle: {math.degrees(ext2_verify_angle):.1f}° 
 # Distance between BL and BR centers
 dx_int2 = pole_br[0] - pole_bl[0]  # from BL to BR (going right)
 dy_int2 = pole_br[1] - pole_bl[1]
-dist_int2 = math.sqrt(dx_int2*dx_int2 + dy_int2*dy_int2)
+dist_int2 = math.sqrt(dx_int2 * dx_int2 + dy_int2 * dy_int2)
 
 # Angle of center-line from BL to BR
 centerline_angle2 = math.atan2(dy_int2, dx_int2)
@@ -293,16 +301,16 @@ print(f"  Tangent line angle (global): {math.degrees(tangent_line_angle2):.1f} d
 #
 # For BL (left circle): tangent point is on the upper-right, toward the tangent line
 #   radius direction = tangent_line_angle2 + pi/2 (perpendicular, pointing "up" from line)
-# For BR (right circle): tangent point is on the lower-left, toward the tangent line  
+# For BR (right circle): tangent point is on the lower-left, toward the tangent line
 #   radius direction = tangent_line_angle2 - pi/2 (perpendicular, pointing "down" from line)
 
 # Tangent point on BL (top side - above the tangent line):
-radius_angle_bl = tangent_line_angle2 + math.pi/2
+radius_angle_bl = tangent_line_angle2 + math.pi / 2
 int2_tangent_bl_x = pole_bl[0] + WIRE_CENTER_RADIUS * math.cos(radius_angle_bl)
 int2_tangent_bl_y = pole_bl[1] + WIRE_CENTER_RADIUS * math.sin(radius_angle_bl)
 
 # Tangent point on BR (bottom side - below the tangent line):
-radius_angle_br = tangent_line_angle2 - math.pi/2
+radius_angle_br = tangent_line_angle2 - math.pi / 2
 int2_tangent_br_x = pole_br[0] + WIRE_CENTER_RADIUS * math.cos(radius_angle_br)
 int2_tangent_br_y = pole_br[1] + WIRE_CENTER_RADIUS * math.sin(radius_angle_br)
 
@@ -310,8 +318,12 @@ print(f"  BL tangent point: ({int2_tangent_bl_x:.3f}, {int2_tangent_bl_y:.3f})")
 print(f"  BR tangent point: ({int2_tangent_br_x:.3f}, {int2_tangent_br_y:.3f})")
 
 # Verify
-verify_angle2 = math.atan2(int2_tangent_br_y - int2_tangent_bl_y, int2_tangent_br_x - int2_tangent_bl_x)
-print(f"  Verification - angle between tangent points: {math.degrees(verify_angle2):.1f}° (should be {math.degrees(tangent_line_angle2):.1f}°)")
+verify_angle2 = math.atan2(
+    int2_tangent_br_y - int2_tangent_bl_y, int2_tangent_br_x - int2_tangent_bl_x
+)
+print(
+    f"  Verification - angle between tangent points: {math.degrees(verify_angle2):.1f}° (should be {math.degrees(tangent_line_angle2):.1f}°)"
+)
 
 # =============================================================================
 # CREATE POLES
@@ -370,8 +382,12 @@ print(f"\nPlates: {plate_width:.1f} x {plate_height:.1f} x {PLATE_THICKNESS:.1f}
 # We need to cut the arc on the LEFT side between these points.
 
 # Calculate angles of tangent points relative to BR center
-angle_ext2_br = math.atan2(ext2_tangent_br_y - pole_br[1], ext2_tangent_br_x - pole_br[0])
-angle_int2_br = math.atan2(int2_tangent_br_y - pole_br[1], int2_tangent_br_x - pole_br[0])
+angle_ext2_br = math.atan2(
+    ext2_tangent_br_y - pole_br[1], ext2_tangent_br_x - pole_br[0]
+)
+angle_int2_br = math.atan2(
+    int2_tangent_br_y - pole_br[1], int2_tangent_br_x - pole_br[0]
+)
 
 print(f"\nBR ring tangent point angles:")
 print(f"  External tangent (from TL): {math.degrees(angle_ext2_br):.1f}°")
@@ -445,7 +461,7 @@ ring_tr_full = (
 #
 # To cut the bottom-left arc, we create a wedge that covers that region.
 # The wedge should go from angle_ext_tr, through -180°/180°, to angle_int_tr
-# 
+#
 # Simple approach: create a wedge from center through both tangent points,
 # but order the points so the wedge covers the bottom-left side (through 180°)
 
@@ -487,7 +503,9 @@ ring_tr_partial = ring_tr_full.cut(cut_wedge_tr)
 
 # Calculate angles of tangent points relative to TL center
 angle_int_tl = math.atan2(int_tangent_tl_y - pole_tl[1], int_tangent_tl_x - pole_tl[0])
-angle_ext2_tl = math.atan2(ext2_tangent_tl_y - pole_tl[1], ext2_tangent_tl_x - pole_tl[0])
+angle_ext2_tl = math.atan2(
+    ext2_tangent_tl_y - pole_tl[1], ext2_tangent_tl_x - pole_tl[0]
+)
 
 print(f"\nTL ring tangent point angles:")
 print(f"  Internal tangent (to TR): {math.degrees(angle_int_tl):.1f}°")
@@ -532,8 +550,8 @@ cut_wedge_tl_right = (
 # Cut wedge for lower arc (from 180° through -90° to -56.6°) - to get upper arc only
 wedge_tl_lower_p1_x = pole_tl[0] + wedge_radius * math.cos(angle_left_tl)
 wedge_tl_lower_p1_y = pole_tl[1] + wedge_radius * math.sin(angle_left_tl)
-wedge_tl_lower_mid_x = pole_tl[0] + wedge_radius * math.cos(-math.pi/2)  # -90°
-wedge_tl_lower_mid_y = pole_tl[1] + wedge_radius * math.sin(-math.pi/2)
+wedge_tl_lower_mid_x = pole_tl[0] + wedge_radius * math.cos(-math.pi / 2)  # -90°
+wedge_tl_lower_mid_y = pole_tl[1] + wedge_radius * math.sin(-math.pi / 2)
 wedge_tl_lower_p2_x = pole_tl[0] + wedge_radius * math.cos(angle_int_tl)
 wedge_tl_lower_p2_y = pole_tl[1] + wedge_radius * math.sin(angle_int_tl)
 
@@ -551,8 +569,8 @@ cut_wedge_tl_lower = (
 # Cut wedge for upper arc (from 45° through 90° to 180°) - to get lower arc only
 wedge_tl_upper_p1_x = pole_tl[0] + wedge_radius * math.cos(angle_ext2_tl)
 wedge_tl_upper_p1_y = pole_tl[1] + wedge_radius * math.sin(angle_ext2_tl)
-wedge_tl_upper_mid_x = pole_tl[0] + wedge_radius * math.cos(math.pi/2)  # 90°
-wedge_tl_upper_mid_y = pole_tl[1] + wedge_radius * math.sin(math.pi/2)
+wedge_tl_upper_mid_x = pole_tl[0] + wedge_radius * math.cos(math.pi / 2)  # 90°
+wedge_tl_upper_mid_y = pole_tl[1] + wedge_radius * math.sin(math.pi / 2)
 wedge_tl_upper_p2_x = pole_tl[0] + wedge_radius * math.cos(angle_left_tl)
 wedge_tl_upper_p2_y = pole_tl[1] + wedge_radius * math.sin(angle_left_tl)
 
@@ -568,8 +586,12 @@ cut_wedge_tl_upper = (
 )
 
 # Create the two TL arcs
-ring_tl_upper = ring_tl_full.cut(cut_wedge_tl_right).cut(cut_wedge_tl_lower)  # Upper left arc (45° to 180°)
-ring_tl_lower = ring_tl_full.cut(cut_wedge_tl_right).cut(cut_wedge_tl_upper)  # Lower left arc (180° to -56.6°)
+ring_tl_upper = ring_tl_full.cut(cut_wedge_tl_right).cut(
+    cut_wedge_tl_lower
+)  # Upper left arc (45° to 180°)
+ring_tl_lower = ring_tl_full.cut(cut_wedge_tl_right).cut(
+    cut_wedge_tl_upper
+)  # Lower left arc (180° to -56.6°)
 
 # Vertical connection point at 180° (leftmost point of TL ring)
 via_tl_x = pole_tl[0] + WIRE_CENTER_RADIUS * math.cos(angle_left_tl)
@@ -589,7 +611,9 @@ print(f"  Via TL position: ({via_tl_x:.3f}, {via_tl_y:.3f})")
 
 # Calculate angles of tangent points relative to BL center
 angle_ext_bl = math.atan2(tangent_bl_y - pole_bl[1], tangent_bl_x - pole_bl[0])
-angle_int2_bl = math.atan2(int2_tangent_bl_y - pole_bl[1], int2_tangent_bl_x - pole_bl[0])
+angle_int2_bl = math.atan2(
+    int2_tangent_bl_y - pole_bl[1], int2_tangent_bl_x - pole_bl[0]
+)
 
 print(f"\nBL ring tangent point angles:")
 print(f"  External tangent (to TR): {math.degrees(angle_ext_bl):.1f}°")
@@ -626,9 +650,9 @@ cut_wedge_bl_right = (
 )
 
 # Define angles for horizontal wire tangent points
-angle_top_bl = math.pi / 2      # 90 degrees (top)
+angle_top_bl = math.pi / 2  # 90 degrees (top)
 angle_bottom_bl = -math.pi / 2  # -90 degrees (bottom)
-angle_left_bl = math.pi         # 180 degrees (left)
+angle_left_bl = math.pi  # 180 degrees (left)
 
 # Cut wedge for left arc (from 90° through 180° to -90°)
 wedge_bl_left_p1_x = pole_bl[0] + wedge_radius_bl * math.cos(angle_top_bl)
@@ -684,11 +708,19 @@ cut_wedge_bl_bottom = (
 # Create the two BL arcs:
 # - ring_bl_upper: from 56.6° (internal tangent to BR) to 90° (top, horizontal wire)
 # - ring_bl_lower: from -90° (bottom, horizontal wire) to -45° (external tangent to TR)
-ring_bl_upper = ring_bl_full.cut(cut_wedge_bl_right).cut(cut_wedge_bl_left).cut(cut_wedge_bl_bottom)
-ring_bl_lower = ring_bl_full.cut(cut_wedge_bl_right).cut(cut_wedge_bl_left).cut(cut_wedge_bl_top)
+ring_bl_upper = (
+    ring_bl_full.cut(cut_wedge_bl_right).cut(cut_wedge_bl_left).cut(cut_wedge_bl_bottom)
+)
+ring_bl_lower = (
+    ring_bl_full.cut(cut_wedge_bl_right).cut(cut_wedge_bl_left).cut(cut_wedge_bl_top)
+)
 
-print(f"  BL upper arc: from {math.degrees(angle_int2_bl):.1f}° to {math.degrees(angle_top_bl):.1f}°")
-print(f"  BL lower arc: from {math.degrees(angle_bottom_bl):.1f}° to {math.degrees(angle_ext_bl):.1f}°")
+print(
+    f"  BL upper arc: from {math.degrees(angle_int2_bl):.1f}° to {math.degrees(angle_top_bl):.1f}°"
+)
+print(
+    f"  BL lower arc: from {math.degrees(angle_bottom_bl):.1f}° to {math.degrees(angle_ext_bl):.1f}°"
+)
 
 # =============================================================================
 # CREATE STRAIGHT WIRES - from bottom-left ring, both going left
@@ -720,7 +752,9 @@ straight_wire_top = (
 # CREATE DIAGONAL TANGENT WIRE - from BL to TR (external, left side)
 # =============================================================================
 
-tangent_length = math.sqrt((tangent_tr_x - tangent_bl_x)**2 + (tangent_tr_y - tangent_bl_y)**2)
+tangent_length = math.sqrt(
+    (tangent_tr_x - tangent_bl_x) ** 2 + (tangent_tr_y - tangent_bl_y) ** 2
+)
 tangent_center_x = (tangent_bl_x + tangent_tr_x) / 2
 tangent_center_y = (tangent_bl_y + tangent_tr_y) / 2
 tangent_angle = math.atan2(tangent_tr_y - tangent_bl_y, tangent_tr_x - tangent_bl_x)
@@ -732,14 +766,21 @@ diagonal_wire = (
     .center(tangent_center_x, tangent_center_y)
     .rect(tangent_length, WIRE_THICKNESS)
     .extrude(WIRE_HEIGHT)
-    .rotate((tangent_center_x, tangent_center_y, 0), (tangent_center_x, tangent_center_y, 1), tangent_angle_deg)
+    .rotate(
+        (tangent_center_x, tangent_center_y, 0),
+        (tangent_center_x, tangent_center_y, 1),
+        tangent_angle_deg,
+    )
 )
 
 # =============================================================================
 # CREATE INTERNAL TANGENT WIRE - from TL bottom to TR top (diagonal, crosses between poles)
 # =============================================================================
 
-int_tangent_length = math.sqrt((int_tangent_tr_x - int_tangent_tl_x)**2 + (int_tangent_tr_y - int_tangent_tl_y)**2)
+int_tangent_length = math.sqrt(
+    (int_tangent_tr_x - int_tangent_tl_x) ** 2
+    + (int_tangent_tr_y - int_tangent_tl_y) ** 2
+)
 int_tangent_center_x = (int_tangent_tl_x + int_tangent_tr_x) / 2
 int_tangent_center_y = (int_tangent_tl_y + int_tangent_tr_y) / 2
 # Use the calculated tangent line angle directly
@@ -754,14 +795,21 @@ internal_tangent_wire = (
     .center(int_tangent_center_x, int_tangent_center_y)
     .rect(int_tangent_length, WIRE_THICKNESS)
     .extrude(WIRE_HEIGHT)
-    .rotate((int_tangent_center_x, int_tangent_center_y, 0), (int_tangent_center_x, int_tangent_center_y, 1), int_tangent_angle_deg)
+    .rotate(
+        (int_tangent_center_x, int_tangent_center_y, 0),
+        (int_tangent_center_x, int_tangent_center_y, 1),
+        int_tangent_angle_deg,
+    )
 )
 
 # =============================================================================
 # CREATE EXTERNAL TANGENT WIRE - from TL to BR (top side)
 # =============================================================================
 
-ext2_tangent_length = math.sqrt((ext2_tangent_br_x - ext2_tangent_tl_x)**2 + (ext2_tangent_br_y - ext2_tangent_tl_y)**2)
+ext2_tangent_length = math.sqrt(
+    (ext2_tangent_br_x - ext2_tangent_tl_x) ** 2
+    + (ext2_tangent_br_y - ext2_tangent_tl_y) ** 2
+)
 ext2_tangent_center_x = (ext2_tangent_tl_x + ext2_tangent_br_x) / 2
 ext2_tangent_center_y = (ext2_tangent_tl_y + ext2_tangent_br_y) / 2
 ext2_tangent_angle_deg = math.degrees(ext2_centerline_angle)
@@ -774,14 +822,21 @@ external_tangent_tl_br = (
     .center(ext2_tangent_center_x, ext2_tangent_center_y)
     .rect(ext2_tangent_length, WIRE_THICKNESS)
     .extrude(WIRE_HEIGHT)
-    .rotate((ext2_tangent_center_x, ext2_tangent_center_y, 0), (ext2_tangent_center_x, ext2_tangent_center_y, 1), ext2_tangent_angle_deg)
+    .rotate(
+        (ext2_tangent_center_x, ext2_tangent_center_y, 0),
+        (ext2_tangent_center_x, ext2_tangent_center_y, 1),
+        ext2_tangent_angle_deg,
+    )
 )
 
 # =============================================================================
 # CREATE INTERNAL TANGENT WIRE - from BR bottom to BL top (diagonal, crosses between poles)
 # =============================================================================
 
-int2_tangent_length = math.sqrt((int2_tangent_bl_x - int2_tangent_br_x)**2 + (int2_tangent_bl_y - int2_tangent_br_y)**2)
+int2_tangent_length = math.sqrt(
+    (int2_tangent_bl_x - int2_tangent_br_x) ** 2
+    + (int2_tangent_bl_y - int2_tangent_br_y) ** 2
+)
 int2_tangent_center_x = (int2_tangent_br_x + int2_tangent_bl_x) / 2
 int2_tangent_center_y = (int2_tangent_br_y + int2_tangent_bl_y) / 2
 int2_tangent_angle_deg = math.degrees(tangent_line_angle2)
@@ -794,7 +849,11 @@ internal_tangent_br_bl = (
     .center(int2_tangent_center_x, int2_tangent_center_y)
     .rect(int2_tangent_length, WIRE_THICKNESS)
     .extrude(WIRE_HEIGHT)
-    .rotate((int2_tangent_center_x, int2_tangent_center_y, 0), (int2_tangent_center_x, int2_tangent_center_y, 1), int2_tangent_angle_deg)
+    .rotate(
+        (int2_tangent_center_x, int2_tangent_center_y, 0),
+        (int2_tangent_center_x, int2_tangent_center_y, 1),
+        int2_tangent_angle_deg,
+    )
 )
 
 # =============================================================================
@@ -803,7 +862,9 @@ internal_tangent_br_bl = (
 # The via connects the upper layer (+Z) to the lower layer (-Z)
 # It's a vertical rectangular prism at the junction point
 
-via_height = 2 * WIRE_Z_OFFSET + WIRE_HEIGHT  # spans from -Z layer bottom to +Z layer top
+via_height = (
+    2 * WIRE_Z_OFFSET + WIRE_HEIGHT
+)  # spans from -Z layer bottom to +Z layer top
 via_z_bottom = WIRE_Z - WIRE_Z_OFFSET  # bottom of via (at lower layer bottom)
 
 via_tl = (
@@ -823,23 +884,32 @@ print(f"Via TL Z range: {via_z_bottom:.3f} to {via_z_bottom + via_height:.3f} mm
 
 segments_base = {
     # Ring arcs
-    1: ("ring_tl_upper", ring_tl_upper),       # TL upper arc (45° to 180°)
-    2: ("ring_tl_lower", ring_tl_lower),       # TL lower arc (180° to -56.6°)
-    3: ("ring_tr_partial", ring_tr_partial),   # TR arc (top-right side)
-    4: ("ring_bl_upper", ring_bl_upper),       # BL upper arc (56.6° to 90°)
-    5: ("ring_bl_lower", ring_bl_lower),       # BL lower arc (-90° to -45°)
-    6: ("ring_br_partial", ring_br_partial),   # BR arc (right side)
-    
+    1: ("ring_tl_upper", ring_tl_upper),  # TL upper arc (45° to 180°)
+    2: ("ring_tl_lower", ring_tl_lower),  # TL lower arc (180° to -56.6°)
+    3: ("ring_tr_partial", ring_tr_partial),  # TR arc (top-right side)
+    4: ("ring_bl_upper", ring_bl_upper),  # BL upper arc (56.6° to 90°)
+    5: ("ring_bl_lower", ring_bl_lower),  # BL lower arc (-90° to -45°)
+    6: ("ring_br_partial", ring_br_partial),  # BR arc (right side)
     # Straight wires
-    7: ("straight_wire_top", straight_wire_top),       # Horizontal wire from top of BL
-    8: ("straight_wire_bottom", straight_wire_bottom), # Horizontal wire from bottom of BL
-    
+    7: ("straight_wire_top", straight_wire_top),  # Horizontal wire from top of BL
+    8: (
+        "straight_wire_bottom",
+        straight_wire_bottom,
+    ),  # Horizontal wire from bottom of BL
     # Diagonal tangent wires
-    9: ("diagonal_wire_bl_tr", diagonal_wire),              # External tangent BL→TR (45°)
-    10: ("internal_tangent_tl_tr", internal_tangent_wire),  # Internal tangent TL→TR (33.4°)
-    11: ("external_tangent_tl_br", external_tangent_tl_br), # External tangent TL→BR (-45°)
-    12: ("internal_tangent_bl_br", internal_tangent_br_bl), # Internal tangent BL→BR (-33.4°)
-    
+    9: ("diagonal_wire_bl_tr", diagonal_wire),  # External tangent BL→TR (45°)
+    10: (
+        "internal_tangent_tl_tr",
+        internal_tangent_wire,
+    ),  # Internal tangent TL→TR (33.4°)
+    11: (
+        "external_tangent_tl_br",
+        external_tangent_tl_br,
+    ),  # External tangent TL→BR (-45°)
+    12: (
+        "internal_tangent_bl_br",
+        internal_tangent_br_bl,
+    ),  # Internal tangent BL→BR (-33.4°)
     # Vertical vias
     13: ("via_tl", via_tl),  # Via connecting segments 1 and 2 at TL 180°
 }
@@ -864,14 +934,14 @@ for num, (name, segment) in segments_base.items():
         segment_moved = segment.translate((0, 0, z_offset))
         segments[num] = (name, segment_moved, layer)
 
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("SEGMENT LIST:")
-print("="*60)
+print("=" * 60)
 print(f"  {'#':>2}  {'Name':<25} {'Layer':<5}")
-print("-"*60)
+print("-" * 60)
 for num, (name, _, layer) in segments.items():
     print(f"  {num:2d}: {name:<25} {layer}")
-print("="*60 + "\n")
+print("=" * 60 + "\n")
 
 # =============================================================================
 # CREATE WINDING 0 - all wire segments combined into one object
@@ -951,10 +1021,8 @@ secondary_bl_right_wire = (
 )
 
 # Combine arc and straight wires
-secondary_bl = (
-    secondary_bl_arc
-    .union(secondary_bl_left_wire)
-    .union(secondary_bl_right_wire)
+secondary_bl = secondary_bl_arc.union(secondary_bl_left_wire).union(
+    secondary_bl_right_wire
 )
 
 print(f"Secondary BL: U-shape around bottom-left pole (pointing -Y)")
@@ -998,10 +1066,8 @@ secondary_br_right_wire = (
     .extrude(WIRE_HEIGHT)
 )
 
-secondary_br = (
-    secondary_br_arc
-    .union(secondary_br_left_wire)
-    .union(secondary_br_right_wire)
+secondary_br = secondary_br_arc.union(secondary_br_left_wire).union(
+    secondary_br_right_wire
 )
 
 print(f"Secondary BR: U-shape around bottom-right pole (pointing -Y)")
@@ -1047,10 +1113,8 @@ secondary_tl_right_wire = (
     .extrude(WIRE_HEIGHT)
 )
 
-secondary_tl = (
-    secondary_tl_arc
-    .union(secondary_tl_left_wire)
-    .union(secondary_tl_right_wire)
+secondary_tl = secondary_tl_arc.union(secondary_tl_left_wire).union(
+    secondary_tl_right_wire
 )
 
 print(f"Secondary TL: U-shape around top-left pole (pointing +Y)")
@@ -1096,10 +1160,8 @@ secondary_tr_right_wire = (
     .extrude(WIRE_HEIGHT)
 )
 
-secondary_tr = (
-    secondary_tr_arc
-    .union(secondary_tr_left_wire)
-    .union(secondary_tr_right_wire)
+secondary_tr = secondary_tr_arc.union(secondary_tr_left_wire).union(
+    secondary_tr_right_wire
 )
 
 print(f"Secondary TR: U-shape around top-right pole (pointing +Y)")
@@ -1108,12 +1170,7 @@ print(f"Secondary TR: U-shape around top-right pole (pointing +Y)")
 # Combine all secondaries into one part
 # -----------------------------------------------------------------------------
 
-secondaries = (
-    secondary_bl
-    .union(secondary_br)
-    .union(secondary_tl)
-    .union(secondary_tr)
-)
+secondaries = secondary_bl.union(secondary_br).union(secondary_tl).union(secondary_tr)
 
 print(f"\nSecondaries: all 4 U-shapes combined into single object")
 print(f"  Arc Z: {arc_z:.3f} mm")
@@ -1156,6 +1213,10 @@ print("Exported: output/core.step (poles + plates)")
 # Export poles separately
 cq.exporters.export(poles, "output/poles.step")
 print("Exported: output/poles.step (poles only)")
+
+# Export plates separately
+cq.exporters.export(plates, "output/plates.step")
+print("Exported: output/plates.step (top + bottom plates)")
 
 print(f"\nPoles: {len(pole_positions)}")
 print(f"Pole diameter: {POLE_DIAMETER} mm")
