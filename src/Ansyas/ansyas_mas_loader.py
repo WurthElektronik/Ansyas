@@ -18,7 +18,7 @@ except ImportError:
 def main(args: Namespace) -> None:
 
     # arguments passed via command line
-    mas_path = args.mas   # if not provided, will default to example json file in the repository
+    mas_path = args.mas
     solution_type = args.solution_type
     operating_point_index = args.operating_point_index
     output_folder = args.output
@@ -41,7 +41,7 @@ def main(args: Namespace) -> None:
         try:
             project_name = f"{mas_dict['magnetic']['manufacturerInfo']['reference']}_{time.time()}"
         except (TypeError, KeyError):
-            base_name = os.path.splitext(os.path.basename(sys.argv[1]))[0]
+            base_name = mas_path.stem
             project_name = f"{base_name}_{time.time()}"
 
     print("outputs_folder")
