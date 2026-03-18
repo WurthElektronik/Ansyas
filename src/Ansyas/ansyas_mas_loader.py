@@ -1,11 +1,11 @@
 import json
-import os
 import time
 import sys
 
-sys.path.append(os.path.dirname(__file__))
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
 
 try:
     from . import mas_autocomplete
@@ -44,7 +44,7 @@ def main(args: Namespace) -> None:
             base_name = mas_path.stem
             project_name = f"{base_name}_{time.time()}"
 
-    print("outputs_folder")
+    print("output_folder")
     print(output_folder)
     print("project_name")
     print(project_name)
