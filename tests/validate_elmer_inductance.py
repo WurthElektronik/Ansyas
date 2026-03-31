@@ -33,11 +33,11 @@ for path in [MVB_PATH, ANSYAS_PATH]:
 import numpy as np
 
 try:
-    import PyMKF
+    from PyOpenMagnetics import PyOpenMagnetics as PyOM
     HAS_PYMKF = True
 except ImportError:
     HAS_PYMKF = False
-    print("Warning: PyMKF not available")
+    print("Warning: PyOpenMagnetics not available")
 
 try:
     from OpenMagneticsVirtualBuilder.builder import Builder
@@ -81,18 +81,23 @@ def load_mas_file(mas_file: str) -> Dict:
     coil = magnetic.get('coil', {})
     core = magnetic.get('core', {})
     
-    if not coil.get('turnsDescription'):
-        raise ValueError(
-            f"MAS file missing 'turnsDescription' in coil. "
-            f"File has functionalDescription with {len(coil.get('functionalDescription', []))} windings. "
-            f"Use PyMKF or OpenMagnetics web tools to wind the coil first."
-        )
-    
-    if not core.get('geometricalDescription'):
-        raise ValueError(
-            f"MAS file missing 'geometricalDescription' in core. "
-            f"Use PyMKF or OpenMagnetics web tools to process the core first."
-        )
+    if not coil.get('turnsDescription') or not core.get('geometricalDescription'):
+        try:
+            from PyOpenMagnetics import PyOpenMagnetics as PyOM
+            print("Auto-completing magnetic data with PyOpenMagnetics...")
+            completed = PyOM.magnetic_autocomplete(magnetic, {})
+            if 'magnetic' in data:
+                data['magnetic'] = completed
+            else:
+                data = completed
+            magnetic = data.get('magnetic', data)
+            coil = magnetic.get('coil', {})
+            core = magnetic.get('core', {})
+        except Exception as e:
+            raise ValueError(
+                f"MAS file missing 'turnsDescription' or 'geometricalDescription' "
+                f"and PyMKF autocomplete failed: {e}"
+            )
     
     print(f"Loaded MAS file with {len(coil.get('turnsDescription', []))} turns")
     
@@ -100,7 +105,7 @@ def load_mas_file(mas_file: str) -> Dict:
 
 
 def get_core_data(magnetic_data: Dict) -> Dict:
-    """Get processed core data using PyMKF."""
+    """Get processed core data using PyOM."""
     import json as json_module
     core = magnetic_data.get('core')
     if core is None:
@@ -112,11 +117,11 @@ def get_core_data(magnetic_data: Dict) -> Dict:
         if not HAS_PYMKF:
             raise ImportError("PyMKF required to process core without geometricalDescription")
         
-        result = PyMKF.calculate_core_data(core, True)
+        result = PyOM.calculate_core_data(core, True)
         # PyMKF returns JSON string
         if isinstance(result, str):
             if result.startswith('Exception:'):
-                raise ValueError(f"PyMKF.calculate_core_data failed: {result}")
+                raise ValueError(f"PyOM.calculate_core_data failed: {result}")
             core = json_module.loads(result)
         elif isinstance(result, dict):
             core = result
@@ -124,7 +129,7 @@ def get_core_data(magnetic_data: Dict) -> Dict:
             raise ValueError(f"Unexpected PyMKF result type: {type(result)}")
         
         if not core.get('geometricalDescription'):
-            raise ValueError("PyMKF.calculate_core_data did not produce geometricalDescription")
+            raise ValueError("PyOM.calculate_core_data did not produce geometricalDescription")
     
     return core
 
@@ -152,18 +157,17 @@ def extract_turns_info(magnetic_data: Dict, core_type: str = "concentric") -> Li
         shape = turn.get('crossSectionalShape', 'round')
         
         if core_type == "toroidal":
-            # For toroidal: coords are [x, z] in XZ plane
-            # Radial distance from Y axis (core axis)
+            # For toroidal: coords are [x, y] in XY plane
             x = coords[0] * 1000  # mm
-            z = coords[1] * 1000 if len(coords) > 1 else 0  # mm
-            radius = math.sqrt(x**2 + z**2)  # Distance from Y axis
-            z_pos = z  # Use Z for position identification
+            y = coords[1] * 1000 if len(coords) > 1 else 0  # mm
+            radius = math.sqrt(x**2 + y**2)  # Distance from Z axis
+            z_pos = y  # Store Y for position identification and Coil Normal
             x_pos = x  # Store X for Coil Normal calculation
         else:
-            # For concentric: coords are [radial, z]
+            # For concentric: coords are [radial(x), height(y)]
             radius = coords[0] * 1000  # Convert to mm
-            z_pos = coords[1] * 1000 if len(coords) > 1 else 0
-            x_pos = 0.0  # Not used for concentric
+            z_pos = coords[1] * 1000 if len(coords) > 1 else 0  # height = Y
+            x_pos = 0.0
         
         # Cross-section area in mm^2
         if shape == 'round':
@@ -212,7 +216,7 @@ def get_material_permeability(material_name: str, temperature: float = 25.0) -> 
     # Try to get from PyMKF
     if HAS_PYMKF:
         try:
-            mat_data = PyMKF.get_material_data(material_name)
+            mat_data = PyOM.get_material_data(material_name)
             perm = mat_data.get('permeability', {})
             initial = perm.get('initial', [])
             
@@ -303,8 +307,8 @@ def calculate_analytical_inductance(core_data: Dict, num_turns: int) -> Optional
     return None
 
 
-def build_geometry(magnetic_data: Dict, output_path: str, 
-                   max_turns: Optional[int] = None) -> Tuple[str, str]:
+def build_geometry(magnetic_data: Dict, output_path: str,
+                   max_turns: Optional[int] = None, include_bobbin: bool = True) -> Tuple[str, str]:
     """Build 3D geometry using MVB."""
     if not HAS_MVB:
         raise ImportError("MVB required")
@@ -320,8 +324,14 @@ def build_geometry(magnetic_data: Dict, output_path: str,
         coil = magnetic_data.get('coil', {}).copy()
         turns = coil.get('turnsDescription', [])
         if turns:
-            # Keep only first max_turns from primary winding
+            # Keep only first max_turns from primary winding (fall back to first winding)
             primary_turns = [t for t in turns if 'primary' in t.get('winding', '').lower()]
+            if not primary_turns:
+                # No primary winding — use turns from the first winding
+                windings = sorted(set(t.get('winding', '') for t in turns))
+                if windings:
+                    first_winding = windings[0]
+                    primary_turns = [t for t in turns if t.get('winding', '') == first_winding]
             coil['turnsDescription'] = primary_turns[:max_turns]
             magnetic_data = {**magnetic_data, 'coil': coil}
     
@@ -331,7 +341,8 @@ def build_geometry(magnetic_data: Dict, output_path: str,
         magnetic_data,
         project_name="magnetic",
         output_path=output_path,
-        export_files=True
+        export_files=True,
+        include_bobbin=True,
     )
     
     if isinstance(result, tuple):
@@ -340,6 +351,269 @@ def build_geometry(magnetic_data: Dict, output_path: str,
         step_path = os.path.join(output_path, "magnetic.step")
         stl_path = os.path.join(output_path, "magnetic.stl")
         return step_path, stl_path
+
+
+def create_mesh_with_netgen(
+    step_file: str,
+    output_path: str,
+    turns_info: List[TurnInfo],
+    core_type: str = "concentric",
+    max_element_size: float = 3.0,
+    air_padding: float = 10.0,
+) -> Tuple[str, Dict[str, int], Dict[int, TurnInfo]]:
+    """Create mesh using Netgen as fallback when gmsh fails.
+
+    Netgen handles near-touching surfaces in toroidal cores better than gmsh.
+    Adds an air box to the geometry before meshing for boundary conditions.
+    """
+    import cadquery as cq
+    from cadquery import exporters
+    from netgen.occ import OCCGeometry
+    from netgen.meshing import MeshingParameters
+
+    mesh_dir = os.path.join(output_path, "mesh")
+    os.makedirs(mesh_dir, exist_ok=True)
+
+    # Load STEP to get bounding box and classify solids
+    compound = cq.importers.importStep(step_file)
+    solids = compound.solids().vals()
+
+    # Create air box around everything
+    bb = compound.val().BoundingBox()
+    air_box = (
+        cq.Workplane("XY")
+        .box(
+            (bb.xmax - bb.xmin) + 2 * air_padding,
+            (bb.ymax - bb.ymin) + 2 * air_padding,
+            (bb.zmax - bb.zmin) + 2 * air_padding,
+        )
+        .translate((
+            (bb.xmin + bb.xmax) / 2,
+            (bb.ymin + bb.ymax) / 2,
+            (bb.zmin + bb.zmax) / 2,
+        ))
+    )
+
+    # Combine all solids + air box into one STEP for Netgen
+    all_pieces = [air_box.val()] + list(solids)
+    combined = cq.Compound.makeCompound(all_pieces)
+    combined_step = os.path.join(output_path, "netgen_input.step")
+    exporters.export(cq.Workplane("XY").add(combined), combined_step, "STEP")
+
+    # Mesh with Netgen — use high grading + local refinement at turn positions
+    # This keeps the air mesh coarse while refining near the thin turns.
+    geo = OCCGeometry(combined_step)
+    # Glue creates conformal interfaces between overlapping solids so they
+    # share mesh nodes at interfaces. Without this, each body gets independent
+    # nodes and the FEM solver can't transfer fields between bodies.
+    # Glue can crash on complex toroidal geometries — fall back to non-glued mesh.
+    try:
+        geo.Glue()
+    except Exception as e:
+        print(f"  Warning: Netgen Glue() failed ({e}), meshing without conformal interfaces")
+    wire_diameter = turns_info[0].cross_section_area ** 0.5 if turns_info else 1.0
+    geo_size = max(bb.xmax - bb.xmin, bb.ymax - bb.ymin, bb.zmax - bb.zmin)
+    coarse_h = max(max_element_size, geo_size / 5)
+    min_h = max(wire_diameter * 0.5, 0.2)
+    grading = 0.5
+    # Cap maxh to avoid meshing failures on thin-wire geometries — Netgen needs
+    # a moderate max/min ratio for reliable volume meshing.
+    coarse_h = min(coarse_h, 6.0)
+
+    mp = MeshingParameters(maxh=coarse_h, minh=min_h, grading=grading)
+
+    ngmesh = geo.GenerateMesh(mp)
+    ngmesh.Export(mesh_dir + "/", "Elmer Format")
+    print(f"  Netgen: {ngmesh.ne} tets, {len(ngmesh.Points())} points")
+
+    # Read node coordinates (in mm) for boundary identification
+    nodes_mm = {}
+    nodes_file = os.path.join(mesh_dir, "mesh.nodes")
+    with open(nodes_file) as nf:
+        for line in nf:
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                nodes_mm[int(parts[0])] = [float(parts[2]), float(parts[3]), float(parts[4])]
+
+    # Find bounding box extremes
+    all_coords = list(nodes_mm.values())
+    bbox_min = [min(c[d] for c in all_coords) for d in range(3)]
+    bbox_max = [max(c[d] for c in all_coords) for d in range(3)]
+
+    # Identify air box outer boundaries: triangles with all 3 nodes on a domain face.
+    # Netgen boundary format: elem_id bt parent1 parent2 elem_type n1 n2 n3
+    boundary_file = os.path.join(mesh_dir, "mesh.boundary")
+    with open(boundary_file) as bf:
+        blines = bf.readlines()
+
+    outer_bt_set = set()
+    tol_mm = 0.5  # 0.5mm tolerance for face identification
+    for line in blines:
+        parts = line.strip().split()
+        if len(parts) >= 8:
+            bt = int(parts[1])
+            tri = [nodes_mm.get(int(parts[i])) for i in range(5, 8)]
+            if any(p is None for p in tri):
+                continue
+            for dim in range(3):
+                vals = [p[dim] for p in tri]
+                if all(abs(v - bbox_min[dim]) < tol_mm for v in vals) or \
+                   all(abs(v - bbox_max[dim]) < tol_mm for v in vals):
+                    outer_bt_set.add(bt)
+                    break
+
+    # Remap air box outer boundaries to type 1 so the SIF can target them
+    with open(boundary_file, 'w') as bf:
+        for line in blines:
+            parts = line.strip().split()
+            if len(parts) >= 8 and int(parts[1]) in outer_bt_set:
+                parts[1] = '1'
+                bf.write(' '.join(parts) + '\n')
+            else:
+                bf.write(line)
+
+    # Scale node coordinates from mm to m (Elmer expects SI units)
+    with open(nodes_file, 'w') as nf:
+        for nid, (x, y, z) in sorted(nodes_mm.items()):
+            nf.write(f"{nid} -1 {x*0.001:.10e} {y*0.001:.10e} {z*0.001:.10e}\n")
+
+    # Read actual body IDs from the Netgen mesh to classify them.
+    # Parse mesh.elements to count elements per body and estimate volumes.
+    body_element_counts = {}
+    elements_file = os.path.join(mesh_dir, "mesh.elements")
+    with open(elements_file) as ef:
+        for line in ef:
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                bid = int(parts[1])
+                body_element_counts[bid] = body_element_counts.get(bid, 0) + 1
+
+    # Estimate body volumes from element coordinates (more reliable than element count,
+    # since thin bodies like bobbins get disproportionately many elements).
+    # Use pre-scaling coordinates (mm) for meaningful volume values.
+    nodes_coords = nodes_mm
+
+    body_volumes = {}
+    for bid, cnt in body_element_counts.items():
+        body_volumes[bid] = 0.0
+    with open(elements_file) as ef:
+        for line in ef:
+            parts = line.strip().split()
+            if len(parts) >= 7:
+                bid = int(parts[1])
+                nids = [int(parts[i]) for i in range(3, 7)]
+                pts = [nodes_coords.get(n, [0,0,0]) for n in nids]
+                # Tet volume = |det([v1-v0, v2-v0, v3-v0])| / 6
+                v0, v1, v2, v3 = pts
+                d1 = [v1[i]-v0[i] for i in range(3)]
+                d2 = [v2[i]-v0[i] for i in range(3)]
+                d3 = [v3[i]-v0[i] for i in range(3)]
+                det = (d1[0]*(d2[1]*d3[2]-d2[2]*d3[1])
+                     - d1[1]*(d2[0]*d3[2]-d2[2]*d3[0])
+                     + d1[2]*(d2[0]*d3[1]-d2[1]*d3[0]))
+                body_volumes[bid] += abs(det) / 6.0
+
+    sorted_bodies = sorted(body_volumes.items(), key=lambda x: -x[1])
+    print(f"  Netgen bodies (by volume): {[(bid, f'{vol:.0f}') for bid, vol in sorted_bodies]}")
+
+    body_numbers = {}
+    turn_bodies = {}
+
+    if len(sorted_bodies) >= 2:
+        # With air box: largest = air body.
+        # Core pieces are large (>30% of 2nd largest count). Turns are small.
+        air_bid = sorted_bodies[0][0]
+        body_numbers['air'] = air_bid
+
+        # Identify core bodies by volume pairing: core halves come in pairs
+        # with nearly identical volumes. The bobbin is a different size.
+        second_vol = sorted_bodies[1][1]
+        core_threshold = second_vol * 0.3
+        candidates = [(bid, vol) for bid, vol in sorted_bodies[1:] if vol >= core_threshold]
+        non_candidates = [(bid, vol) for bid, vol in sorted_bodies[1:] if vol < core_threshold]
+
+        # Group candidates by similar volume (within 5%)
+        core_bids = []
+        if candidates:
+            candidates.sort(key=lambda x: -x[1])
+            groups = []
+            used = set()
+            for i, (b1, v1) in enumerate(candidates):
+                if i in used:
+                    continue
+                group = [(b1, v1)]
+                used.add(i)
+                for j, (b2, v2) in enumerate(candidates):
+                    if j in used:
+                        continue
+                    if abs(v1 - v2) / max(v1, 1) < 0.05:
+                        group.append((b2, v2))
+                        used.add(j)
+                groups.append(group)
+            # Largest group with >=2 members = core
+            core_group = max(groups, key=lambda g: len(g) * 1000 + sum(v for _, v in g))
+            core_bids = [bid for bid, _ in core_group]
+            non_core_candidates = [bid for bid, _ in candidates if bid not in core_bids]
+        else:
+            non_core_candidates = []
+
+        turn_bids = [bid for bid, _ in non_candidates] + non_core_candidates
+        # All core pieces share the same body number (merged into one "core" body)
+        # We remap them in the mesh.elements file below
+        body_numbers['core'] = core_bids[0] if core_bids else sorted_bodies[1][0]
+
+        # Remap additional core pieces to the primary core body ID
+        if len(core_bids) > 1:
+            primary_core = core_bids[0]
+            elements_file = os.path.join(mesh_dir, "mesh.elements")
+            with open(elements_file) as ef:
+                elines = ef.readlines()
+            with open(elements_file, 'w') as ef:
+                for line in elines:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and int(parts[1]) in core_bids[1:]:
+                        parts[1] = str(primary_core)
+                        ef.write(' '.join(parts) + '\n')
+                    else:
+                        ef.write(line)
+            print(f"  Merged {len(core_bids)} core bodies into body {primary_core}")
+        reimported = cq.importers.importStep(combined_step)
+        turn_solids = [s for s in sorted(reimported.solids().vals(), key=lambda s: s.Volume()) if s.Volume() < 500]
+
+        matched_turns = set()
+        for i, bid in enumerate(turn_bids):
+            if i < len(turn_solids):
+                com = turn_solids[i].Center()
+                if core_type == "toroidal":
+                    center_angle = math.atan2(com.y, com.x)
+                else:
+                    center_pos = com.y
+            else:
+                center_angle = 0
+                center_pos = 0
+
+            best_match = None
+            best_dist = float('inf')
+            for ti in turns_info:
+                if id(ti) in matched_turns:
+                    continue
+                if core_type == "toroidal":
+                    ti_angle = math.atan2(ti.z_position, ti.x_position) if ti.x_position != 0 else 0
+                    dist = abs(ti_angle - center_angle)
+                    if dist > math.pi:
+                        dist = 2 * math.pi - dist
+                else:
+                    dist = abs(ti.z_position - center_pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_match = ti
+
+            if best_match:
+                body_numbers[best_match.name] = bid
+                turn_bodies[bid] = best_match
+                matched_turns.add(id(best_match))
+
+    return mesh_dir, body_numbers, turn_bodies
 
 
 def create_mesh_with_turns(
@@ -374,8 +648,13 @@ def create_mesh_with_turns(
     
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 2)
+    # Toroidal turns pass through the core hole with near-touching surfaces.
+    # Increased tolerance prevents gmsh "overlapping facets" at these interfaces.
+    if core_type == "toroidal":
+        gmsh.option.setNumber("Geometry.Tolerance", 1e-2)
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-2)
     gmsh.model.add("magnetic")
-    
+
     try:
         # Import STEP
         # Note: Don't use healShapes() as it can destroy solids.
@@ -466,15 +745,17 @@ def create_mesh_with_turns(
         # 2. Core pieces are the largest volumes that DON'T match turn positions
         # 3. Bobbin is intermediate - matches neither core nor turn criteria
         
+        core_tags_max_vol = 0
+        core_candidates = []  # (tag, vol) pairs for deferred core/bobbin classification
         if not skip_standard_classification:
             # First pass: identify turns by matching to MAS turn positions
             turn_position_tolerance = 2.0  # mm tolerance for position matching
             matched_turn_tags = set()
             
             for dim, tag, actual_vol, com in all_volumes:
-                center_z = com[2]
-                # Calculate radius from Z axis (for concentric/toroidal cores)
-                radius_from_axis = math.sqrt(com[0]**2 + com[1]**2)
+                center_z = com[1]  # height is Y axis for concentric
+                # Calculate radius from Y axis (column axis for concentric)
+                radius_from_axis = math.sqrt(com[0]**2 + com[2]**2)
                 
                 # Try to match this volume to a MAS turn
                 for ti in turns_info:
@@ -501,10 +782,10 @@ def create_mesh_with_turns(
                 core_vol_threshold = max_vol * 0.3
             
             for dim, tag, actual_vol, com in all_volumes:
-                center_z = com[2]
-                
+                center_z = com[1]  # height is Y axis
+
                 if tag in matched_turn_tags:
-                    # This is a turn - find best match by z-position
+                    # This is a turn - find best match by z-position (Y axis)
                     best_match = None
                     best_dist = float('inf')
                     for ti in turns_info:
@@ -516,10 +797,10 @@ def create_mesh_with_turns(
                     turn_tags.append((tag, best_match))
                     print(f"  Volume {tag}: TURN z={center_z:.2f}mm, vol={actual_vol:.0f}mm³ -> {best_match.name}")
                 
-                elif actual_vol >= core_vol_threshold and len(core_tags) < 2:
-                    # Large volume, likely core (allow up to 2 pieces for half-set cores)
-                    core_tags.append(tag)
-                    print(f"  Volume {tag}: CORE (vol={actual_vol:.0f}mm³)")
+                elif actual_vol >= core_vol_threshold:
+                    # Defer classification — collect all large volumes first.
+                    # Core halves come in pairs; the unpaired one is the bobbin.
+                    core_candidates.append((tag, actual_vol))
                 
                 elif actual_vol > typical_turn_vol * 2 if typical_turn_vol > 0 else actual_vol > 100:
                     # Intermediate volume - bobbin or other structure, treat as air
@@ -545,6 +826,40 @@ def create_mesh_with_turns(
                         bobbin_tags.append(tag)
                         print(f"  Volume {tag}: UNKNOWN (vol={actual_vol:.0f}mm³) -> treat as air")
         
+        # Resolve core candidates: core halves come in pairs with matching volumes.
+        # Group by similar volume (within 5%), then the largest group = core pieces.
+        # Any unpaired candidate = bobbin.
+        if core_candidates:
+            core_candidates.sort(key=lambda x: -x[1])
+            groups = []
+            used = set()
+            for i, (t1, v1) in enumerate(core_candidates):
+                if i in used:
+                    continue
+                group = [(t1, v1)]
+                used.add(i)
+                for j, (t2, v2) in enumerate(core_candidates):
+                    if j in used:
+                        continue
+                    if abs(v1 - v2) / max(v1, 1) < 0.05:
+                        group.append((t2, v2))
+                        used.add(j)
+                groups.append(group)
+            # Largest group with >=2 members = core pieces
+            core_group = max(groups, key=lambda g: len(g) * 1000 + sum(v for _, v in g))
+            for tag, vol in core_group:
+                if len(core_group) >= 2:
+                    core_tags.append(tag)
+                    print(f"  Volume {tag}: CORE (vol={vol:.0f}mm³)")
+                else:
+                    # Single piece — could be bobbin or single-piece core
+                    core_tags.append(tag)
+                    print(f"  Volume {tag}: CORE (vol={vol:.0f}mm³, single)")
+            for tag, vol in core_candidates:
+                if tag not in core_tags:
+                    bobbin_tags.append(tag)
+                    print(f"  Volume {tag}: BOBBIN (vol={vol:.0f}mm³) -> treat as air")
+
         # For toroidal cores: Use fragment to create conformal mesh
         # Note: Don't use cut() as it creates overlapping facets
         # Note: Don't use removeAllDuplicates() as it can destroy small volumes
@@ -560,11 +875,16 @@ def create_mesh_with_turns(
             )
             gmsh.model.occ.synchronize()
             
+            # Set tolerance for near-touching turn-core surfaces
+            gmsh.option.setNumber("Geometry.Tolerance", 1e-2)
+            gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-2)
+
             # Fragment for conformal mesh (works better than cut for toroidal)
             all_solid_tags = [(3, tag) for tag in core_tags] + [(3, t[0]) for t in turn_tags]
             out_dimtags, out_map = gmsh.model.occ.fragment([(3, air_box)], all_solid_tags)
             gmsh.model.occ.synchronize()
-            
+
+
             # Use fragment output map to track volumes
             # out_map[0] = what air_box became (includes air region)
             # out_map[1] = what core became
@@ -590,14 +910,22 @@ def create_mesh_with_turns(
                 if tag in core_new_tags:
                     new_core.append(tag)
                 elif tag in turn_new_tags_list:
-                    # Find matching turn by position
-                    center_radial = math.sqrt(com[0]**2 + com[2]**2)
+                    # Find matching turn by angular position in XY plane
+                    # (all turns on the same layer have the same radius)
+                    turn_angle = math.atan2(com[1], com[0])
+                    matched_ids = set(id(t) for _, t in new_turns)
                     best_match = None
                     best_dist = float('inf')
                     for turn_info in turns_info:
-                        dist = abs(turn_info.radius - center_radial)
-                        if dist < best_dist:
-                            best_dist = dist
+                        if id(turn_info) in matched_ids:
+                            continue  # already matched
+                        ti_angle = math.atan2(turn_info.z_position, turn_info.x_position)
+                        # Angular distance (handle wrap-around)
+                        d = abs(turn_angle - ti_angle)
+                        if d > math.pi:
+                            d = 2 * math.pi - d
+                        if d < best_dist:
+                            best_dist = d
                             best_match = turn_info
                     if best_match:
                         new_turns.append((tag, best_match))
@@ -615,8 +943,7 @@ def create_mesh_with_turns(
             )
             
             # Fragment for conformal mesh
-            # Include all volumes (core, bobbin, turns) in fragmentation for proper conformal mesh
-            all_vol_tags = ([(3, tag) for tag in core_tags] + 
+            all_vol_tags = ([(3, tag) for tag in core_tags] +
                             [(3, tag) for tag in bobbin_tags] +
                             [(3, t[0]) for t in turn_tags])
             
@@ -658,8 +985,9 @@ def create_mesh_with_turns(
                     'bbox_vol': bbox_vol,
                 })
             
-            # Sort by volume (excluding air - identified by large bbox)
-            solid_vols = [v for v in vol_info if v['bbox_vol'] < 50000]
+            # Sort by volume (excluding air box — the single largest bbox volume)
+            max_bbox = max(v['bbox_vol'] for v in vol_info)
+            solid_vols = [v for v in vol_info if v['bbox_vol'] < max_bbox * 0.9]
             solid_vols.sort(key=lambda x: -x['vol'])
             # Standard classification for concentric cores
             # The largest 2 solid volumes (excluding air-sized) are core halves
@@ -672,32 +1000,47 @@ def create_mesh_with_turns(
             for v in vol_info:
                 tag = v['tag']
                 actual_vol = v['vol']
-                center_z = v['com'][2]
+                center_z = v['com'][1]  # height is Y axis for concentric
                 bbox_vol = v['bbox_vol']
                 
-                if bbox_vol > 50000:  # Large bounding box = air region
+                if bbox_vol > max_bbox * 0.9:  # Largest bounding box = air region
                     new_air.append(tag)
-                elif actual_vol >= core_vol_threshold and len(new_core) < 2:
-                    # Core piece (up to 2 for split cores)
-                    new_core.append(tag)
+                elif actual_vol >= core_vol_threshold:
+                    # Core halves come in pairs with nearly identical volumes.
+                    is_core = False
+                    if not new_core:
+                        is_core = True
+                    else:
+                        for ct in new_core:
+                            ct_vol = next(v2['vol'] for v2 in vol_info if v2['tag'] == ct)
+                            if abs(actual_vol - ct_vol) / max(ct_vol, 1) < 0.05:
+                                is_core = True
+                                break
+                    if is_core:
+                        new_core.append(tag)
+                    else:
+                        new_air.append(tag)  # Bobbin
                 elif actual_vol > expected_turn_vol * 3 if expected_turn_vol > 0 else actual_vol > 100:
                     # Bobbin or other intermediate volume - treat as air
                     new_air.append(tag)
                 else:  # Small volume - could be turn or fragment
-                    # Find matching turn info by z-position
+                    # Find matching turn info by z-position (each turn matches once)
+                    matched_turns_set = set(id(t) for _, t in new_turns)
                     best_match = None
                     best_dist = float('inf')
                     for ti in turns_info:
+                        if id(ti) in matched_turns_set:
+                            continue  # already matched
                         dist = abs(ti.z_position - center_z)
                         if dist < best_dist:
                             best_dist = dist
                             best_match = ti
-                    
+
                     # Check if volume is similar to expected turn volume (within 3x)
                     vol_ratio = actual_vol / expected_turn_vol if expected_turn_vol > 0 else 0
                     is_turn_sized = 0.3 < vol_ratio < 3.0 if expected_turn_vol > 0 else False
-                    
-                    if best_match and best_dist < 2.0 and is_turn_sized:
+
+                    if best_match and best_dist < 1.0 and is_turn_sized:
                         # Valid turn: matches position AND size
                         new_turns.append((tag, best_match))
                     else:
@@ -754,39 +1097,110 @@ def create_mesh_with_turns(
             gmsh.model.addPhysicalGroup(2, outer_surfs, tag=100, name="outer_boundary")
             print(f"  Added outer boundary: {len(outer_surfs)} surfaces")
         
-        # Mesh settings - use finer mesh for toroidal cores with small turns
-        actual_max_size = max_element_size
+        # Compute wire diameter from turn cross-section area for mesh sizing
+        if turns_info:
+            wire_diameter = 2.0 * math.sqrt(turns_info[0].cross_section_area / math.pi)
+        else:
+            wire_diameter = 1.0
+
+        # Collect turn surfaces for mesh refinement.
+        # Use the expected turn volume to identify turn bodies.
+        turn_surface_tags = set()
+        if turns_info:
+            expected_turn_vol = turns_info[0].cross_section_area * 2 * math.pi * turns_info[0].radius
+            vol_threshold = expected_turn_vol * 10  # generous threshold
+        else:
+            vol_threshold = 500
+        for dim, tag in gmsh.model.getEntities(3):
+            mass = gmsh.model.occ.getMass(dim, tag)
+            if 0 < mass < vol_threshold:
+                surfs = gmsh.model.getBoundary([(3, tag)], combined=False, oriented=False)
+                for s in surfs:
+                    turn_surface_tags.add(s[1])
+
+        # Mesh settings — scale max element size based on geometry span
+        # to avoid excessively large meshes on big cores
+        geo_span = max(x_max - x_min, y_max - y_min, z_max - z_min)
+        actual_max_size = max(max_element_size, geo_span / 10.0)
         actual_min_size = min_element_size
         if core_type == "toroidal" and turns_info:
-            # For toroidal turns, use fixed fine mesh sizes that work reliably
-            actual_max_size = 2.0  # Fixed value that works
-            actual_min_size = 0.2  # Fixed value that works
+            actual_max_size = max(2.0, geo_span / 10.0)
+            actual_min_size = 0.2
             print(f"  Using toroidal mesh sizes: max={actual_max_size:.2f}mm, min={actual_min_size:.2f}mm")
-        
-        gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", actual_min_size)
-        
-        # Use HXT algorithm for toroidal (handles thin volumes better)
-        # Use Delaunay for concentric cores
+
+        # Refine mesh near turn surfaces. Use wire_diameter / 4 to resolve
+        # the circular cross-section properly.
+        fine_size = wire_diameter / 4.0
+        # For toroidal, use gentler refinement — the pipe sweep B-spline
+        # surfaces cause "overlapping facets" with aggressive distance fields.
         if core_type == "toroidal":
-            gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
-        else:
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
-        
+            fine_size = max(fine_size, wire_diameter / 2.0, 0.2)
+
+        turn_surface_tags_list = list(turn_surface_tags) if turn_surface_tags else []
+        if turn_surface_tags_list:
+            dist_field = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_field, "SurfacesList", turn_surface_tags_list)
+
+            thresh_field = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", fine_size)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", actual_max_size)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", wire_diameter * 3)
+
+            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            print(f"  Turn mesh refinement: fine_size={fine_size:.3f}mm (wire_diam={wire_diameter:.3f}mm)")
+
+        gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", max(fine_size * 0.5, 0.1))
+
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
+        gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay for 2D
         gmsh.option.setNumber("Mesh.Optimize", 1)
         gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
-        
-        # Generate mesh
-        # Note: Don't call removeDuplicateNodes/Elements for toroidal - it can destroy volumes
+        gmsh.option.setNumber("Mesh.OptimizeThreshold", 0.5)
+
+        # Generate mesh with escalating retries.
+        # For toroidal: try Delaunay, then HXT, then coarser Delaunay.
+        # For concentric: try Delaunay with escalating coarseness.
+        if core_type == "toroidal":
+            retry_configs = [
+                (1, 1, "Delaunay"),
+                (10, 1, "HXT"),
+                (1, 3, "Delaunay 3x coarser"),
+                (10, 3, "HXT 3x coarser"),
+                (1, 8, "Delaunay 8x coarser"),
+            ]
+        else:
+            retry_configs = [
+                (1, 1, "Delaunay"),
+                (1, 3, "Delaunay 3x coarser"),
+                (1, 8, "Delaunay 8x coarser"),
+            ]
+
         print("\nGenerating mesh...")
-        try:
-            gmsh.model.mesh.generate(3)
-        except Exception as e:
-            print(f"Warning: Initial mesh generation failed: {e}")
-            print("Retrying with coarser settings...")
-            gmsh.model.mesh.clear()
-            gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size * 2)
-            gmsh.model.mesh.generate(3)
+        for i, (algo3d, coarse_factor, desc) in enumerate(retry_configs):
+            try:
+                if i > 0:
+                    print(f"Retrying with {desc}...")
+                    gmsh.model.mesh.clear()
+                gmsh.option.setNumber("Mesh.Algorithm3D", algo3d)
+                if coarse_factor > 1:
+                    if turn_surface_tags:
+                        gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", fine_size * coarse_factor)
+                    gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size * coarse_factor)
+                gmsh.model.mesh.generate(3)
+                et, tags_check, _ = gmsh.model.mesh.getElements(3)
+                n = sum(len(t) for t in tags_check) if tags_check else 0
+                if n > 0:
+                    print(f"  Success with {desc}: {n} elements")
+                    break
+                print(f"Warning: {desc} produced 0 elements")
+            except Exception as e:
+                print(f"Warning: {desc} failed: {e}")
         
         # Verify 3D elements were created
         elem_types, elem_tags, _ = gmsh.model.mesh.getElements(3)
@@ -794,7 +1208,17 @@ def create_mesh_with_turns(
         if total_3d == 0:
             raise RuntimeError("No 3D elements generated - mesh failed")
         print(f"Generated {total_3d} 3D elements")
-        
+
+        # Extra optimization passes for toroidal meshes to eliminate degenerate
+        # elements in the thin air gaps between turns
+        if core_type == "toroidal":
+            gmsh.option.setNumber("Mesh.OptimizeThreshold", 0.3)
+            for opt_pass in range(5):
+                gmsh.model.mesh.optimize("", force=True)
+            gmsh.model.mesh.optimize("Netgen", force=True)
+            gmsh.model.mesh.optimize("HighOrderElastic", force=True)
+            print("Applied extra mesh optimization passes for toroidal")
+
         # Save
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
         msh_path = os.path.join(output_path, "mesh.msh")
@@ -805,16 +1229,12 @@ def create_mesh_with_turns(
         gmsh.finalize()
     
     # Convert to Elmer format
-    elmer_grid = os.path.expanduser("~/elmer/install/bin/ElmerGrid")
     mesh_dir = os.path.join(output_path, "mesh")
-    
-    env = os.environ.copy()
-    env["PATH"] = os.path.expanduser("~/elmer/install/bin") + ":" + env.get("PATH", "")
-    
-    cmd = [elmer_grid, "14", "2", "mesh.msh", "-autoclean", 
+
+    cmd = ["ElmerGrid", "14", "2", "mesh.msh", "-autoclean",
            "-scale", "0.001", "0.001", "0.001"]  # mm to m
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path, env=env)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
     print(f"ElmerGrid output: {result.stdout[:500]}")
     
     if not os.path.exists(mesh_dir):
@@ -915,24 +1335,22 @@ def generate_sif_with_coil_solver(
         
         # Calculate Coil Normal based on core type and turn position
         if core_type == "toroidal":
-            # For toroidal: turn position is in XZ plane, Y is core axis
-            # The turn wraps around the toroidal cross-section (poloidal)
-            # Coil Normal should point in toroidal direction (along major circumference)
-            x = turn_info.x_position  # x in mm (stored from MAS coordinates)
-            z = turn_info.z_position  # z in mm
-            
-            # Normalize to get unit vector in XZ plane
-            r_actual = math.sqrt(x**2 + z**2) if (x**2 + z**2) > 0 else 1.0
-            
-            # Toroidal direction is tangent to major circumference
-            # At point (x, 0, z), tangent is (-z/r, 0, x/r)
-            nx = -z / r_actual
-            ny = 0.0
-            nz = x / r_actual
+            # For toroidal: turn position is in XY plane, Z is perpendicular
+            # Coil Normal should point in toroidal direction (tangent to major circumference)
+            x = turn_info.x_position  # x in mm
+            y = turn_info.z_position  # y in mm (stored as z_position but is Y coordinate)
+
+            # Normalize to get unit vector in XY plane
+            r_actual = math.sqrt(x**2 + y**2) if (x**2 + y**2) > 0 else 1.0
+
+            # Toroidal tangent at (x, y, 0): (-y/r, x/r, 0)
+            nx = -y / r_actual
+            ny = x / r_actual
+            nz = 0.0
             coil_normal = f"  Coil Normal(3) = Real {nx:.6f} {ny:.6f} {nz:.6f}"
         else:
-            # For concentric (PQ, E-core): turns are around Z axis
-            coil_normal = "  Coil Normal(3) = Real 0.0 0.0 1.0"
+            # For concentric (PQ, E-core): turns are around Y axis (column axis)
+            coil_normal = "  Coil Normal(3) = Real 0.0 1.0 0.0"
         
         sif_lines.extend([
             f"Component {comp_id}",
@@ -1029,7 +1447,6 @@ def generate_sif_with_coil_solver(
         "  Use Elemental CoilCurrent = Logical True",
         "  Fix Input Current Density = Logical True",
         "",
-        "  ! Use direct solver for robustness with high permeability contrast",
         "  Linear System Solver = Direct",
         "  Linear System Direct Method = UMFPack",
         "",
@@ -1098,6 +1515,8 @@ def generate_sif_with_tangential_current(
     turn_bodies: Dict[int, TurnInfo],
     core_permeability: float = 2000.0,
     total_current: float = 1.0,  # Total current through winding (A)
+    core_type: str = "concentric",
+    use_iterative_solver: bool = False,
 ) -> str:
     """
     Generate SIF file with proper tangential current for each turn.
@@ -1193,7 +1612,12 @@ def generate_sif_with_tangential_current(
         
         A_m2 = turn_info.cross_section_area * 1e-6  # m^2
         R0_m = turn_info.radius * 1e-3  # m (mean radius of turn from z-axis)
-        z0_m = turn_info.z_position * 1e-3  # m (z position of turn center)
+        if core_type == "toroidal":
+            # Toroidal turns lie in the XY plane; z_position stores the Y coord.
+            # The actual Z coordinate of the turn center is 0.
+            z0_m = 0.0
+        else:
+            z0_m = turn_info.z_position * 1e-3  # m (height along Y axis)
         
         J_mag = total_current / A_m2  # A/m^2
         
@@ -1209,34 +1633,56 @@ def generate_sif_with_tangential_current(
         #
         # Using tx(0)=x, tx(1)=y, tx(2)=z in MATC
         
-        # TANGENTIAL CURRENT around Z-axis (original approach)
-        # 
-        # For a toroidal turn centered at R0 from Z-axis:
-        # Current flows tangentially around Z (φ direction)
-        # J = (I/A) * tangential_direction
-        # 
-        # Tangential direction at (x,y): (-y/r, x/r, 0) where r = sqrt(x²+y²)
-        # 
-        # This creates H-field circling around Z-axis (like a solenoid's field)
-        # which is what we want for flux through the core legs.
-        
-        sif_lines.extend([
-            f"Body Force {body_force_id}",
-            f'  Name = "Current_{turn_info.name}"',
-            f"  ! Tangential current around Z-axis",
-            f"  ! Turn at R0 = {R0_m*1000:.2f} mm, z0 = {z0_m*1000:.2f} mm",
-            f"  ! Cross-section area: A = {A_m2*1e6:.2f} mm^2",
-            f"  ! Current density: |J| = I/A = {J_mag:.4e} A/m^2",
-            f"  ! orientation = {turn_info.orientation}",
-            "  ! Tangential: Jx = -J*y/r, Jy = J*x/r, Jz = 0",
-            "  Current Density 1 = Variable Coordinate",
-            f'    Real MATC "{-sign * J_mag} * tx(1) / (sqrt(tx(0)^2 + tx(1)^2) + 1e-10)"',
-            "  Current Density 2 = Variable Coordinate",
-            f'    Real MATC "{sign * J_mag} * tx(0) / (sqrt(tx(0)^2 + tx(1)^2) + 1e-10)"',
-            "  Current Density 3 = Real 0.0",
-            "End",
-            "",
-        ])
+        if core_type == "toroidal":
+            # POLOIDAL CURRENT for toroidal turns
+            # Each turn is a loop around the core. Current flows along the loop
+            # (poloidal direction), creating flux through the core cross-section.
+            #
+            # At point (x,y,z), the poloidal direction around the turn center at
+            # radius R0 from Z axis:
+            #   r = sqrt(x²+y²)
+            #   dr = r - R0, dz = z - z0
+            #   rho = sqrt(dr² + dz²)  (distance from turn center line)
+            #   e_pol = (-(dz/rho)*r_hat + (dr/rho)*z_hat)
+            #   Jx = J * (-dz/rho) * (x/r)
+            #   Jy = J * (-dz/rho) * (y/r)
+            #   Jz = J * (dr/rho)
+            eps = 1e-10
+            sif_lines.extend([
+                f"Body Force {body_force_id}",
+                f'  Name = "Current_{turn_info.name}"',
+                f"  ! Poloidal current for toroidal turn",
+                f"  ! Turn at R0 = {R0_m*1000:.2f} mm, z0 = {z0_m*1000:.2f} mm",
+                f"  ! Cross-section area: A = {A_m2*1e6:.2f} mm^2",
+                f"  ! Current density: |J| = I/A = {J_mag:.4e} A/m^2",
+                "  Current Density 1 = Variable Coordinate",
+                f'    Real MATC "{-sign * J_mag} * (tx(2) - {z0_m}) / (sqrt((sqrt(tx(0)^2 + tx(1)^2) - {R0_m})^2 + (tx(2) - {z0_m})^2) + {eps}) * tx(0) / (sqrt(tx(0)^2 + tx(1)^2) + {eps})"',
+                "  Current Density 2 = Variable Coordinate",
+                f'    Real MATC "{-sign * J_mag} * (tx(2) - {z0_m}) / (sqrt((sqrt(tx(0)^2 + tx(1)^2) - {R0_m})^2 + (tx(2) - {z0_m})^2) + {eps}) * tx(1) / (sqrt(tx(0)^2 + tx(1)^2) + {eps})"',
+                "  Current Density 3 = Variable Coordinate",
+                f'    Real MATC "{sign * J_mag} * (sqrt(tx(0)^2 + tx(1)^2) - {R0_m}) / (sqrt((sqrt(tx(0)^2 + tx(1)^2) - {R0_m})^2 + (tx(2) - {z0_m})^2) + {eps})"',
+                "End",
+                "",
+            ])
+        else:
+            # TANGENTIAL CURRENT around Y-axis for concentric
+            # Column axis is Y. Current flows in XZ plane: (-z/r, 0, x/r)
+            # where r = sqrt(x²+z²)
+            sif_lines.extend([
+                f"Body Force {body_force_id}",
+                f'  Name = "Current_{turn_info.name}"',
+                f"  ! Tangential current around Y-axis (concentric)",
+                f"  ! Turn at R0 = {R0_m*1000:.2f} mm, y0 = {z0_m*1000:.2f} mm",
+                f"  ! Cross-section area: A = {A_m2*1e6:.2f} mm^2",
+                f"  ! Current density: |J| = I/A = {J_mag:.4e} A/m^2",
+                "  Current Density 1 = Variable Coordinate",
+                f'    Real MATC "{-sign * J_mag} * tx(2) / (sqrt(tx(0)^2 + tx(2)^2) + 1e-10)"',
+                "  Current Density 2 = Real 0.0",
+                "  Current Density 3 = Variable Coordinate",
+                f'    Real MATC "{sign * J_mag} * tx(0) / (sqrt(tx(0)^2 + tx(2)^2) + 1e-10)"',
+                "End",
+                "",
+            ])
         
         body_force_map[body_id] = body_force_id
         body_force_id += 1
@@ -1294,8 +1740,26 @@ def generate_sif_with_tangential_current(
         '  Procedure = "MagnetoDynamics" "WhitneyAVSolver"',
         "  Variable = AV",
         "",
-        "  Linear System Solver = Direct",
-        "  Linear System Direct Method = UMFPACK",
+    ])
+
+    if use_iterative_solver:
+        sif_lines.extend([
+            "  Linear System Solver = Iterative",
+            "  Linear System Iterative Method = BiCGStabl",
+            "  BiCGstabl polynomial degree = 4",
+            "  Linear System Max Iterations = 2000",
+            "  Linear System Convergence Tolerance = 1.0e-8",
+            "  Linear System Preconditioning = ILU2",
+            "  Linear System Abort Not Converged = False",
+            "  Linear System Residual Output = 50",
+        ])
+    else:
+        sif_lines.extend([
+            "  Linear System Solver = Direct",
+            "  Linear System Direct Method = UMFPACK",
+        ])
+
+    sif_lines.extend([
         "",
         "  Steady State Convergence Tolerance = 1.0e-8",
         "End",
@@ -1311,8 +1775,25 @@ def generate_sif_with_tangential_current(
         "  Calculate Nodal Fields = False",
         "  Calculate Elemental Fields = True",
         "",
-        "  Linear System Solver = Direct",
-        "  Linear System Direct Method = UMFPACK",
+    ])
+
+    if use_iterative_solver:
+        sif_lines.extend([
+            "  Linear System Solver = Iterative",
+            "  Linear System Iterative Method = BiCGStabl",
+            "  BiCGstabl polynomial degree = 2",
+            "  Linear System Max Iterations = 1000",
+            "  Linear System Convergence Tolerance = 1.0e-6",
+            "  Linear System Preconditioning = ILU1",
+            "  Linear System Abort Not Converged = False",
+        ])
+    else:
+        sif_lines.extend([
+            "  Linear System Solver = Direct",
+            "  Linear System Direct Method = UMFPACK",
+        ])
+
+    sif_lines.extend([
         "",
         "  Steady State Convergence Tolerance = 1.0e-6",
         "End",
@@ -1357,19 +1838,13 @@ def run_elmer(sim_dir: str, timeout: int = 600) -> Tuple[bool, float, str]:
     Returns:
         (success, energy, output)
     """
-    elmer_solver = os.path.expanduser("~/elmer/install/bin/ElmerSolver")
-    
-    env = os.environ.copy()
-    env["PATH"] = os.path.expanduser("~/elmer/install/bin") + ":" + env.get("PATH", "")
-    
     try:
         result = subprocess.run(
-            [elmer_solver],
+            ["ElmerSolver"],
             cwd=sim_dir,
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=env
         )
         
         output = result.stdout + result.stderr
@@ -1446,6 +1921,12 @@ def validate_mas_file(
     
     # Limit turns if needed
     primary_turns = [t for t in turns_info if 'primary' in t.winding.lower()]
+    if not primary_turns:
+        # No primary winding — use turns from the first winding
+        windings = sorted(set(t.winding for t in turns_info))
+        if windings:
+            first_winding = windings[0]
+            primary_turns = [t for t in turns_info if t.winding == first_winding]
     if max_turns and len(primary_turns) > max_turns:
         primary_turns = primary_turns[:max_turns]
     
@@ -1510,21 +1991,101 @@ def validate_mas_file(
         print(f"ERROR: {e}")
         return results
     
-    # Create mesh
+    # Create mesh — try gmsh first, fall back to Netgen if it fails.
+    # gmsh can segfault on complex geometries, so run it in a child process.
     print("\n--- Creating mesh ---")
+    used_netgen = False
+    gmsh_ok = False
     try:
-        mesh_dir, body_numbers, turn_bodies = create_mesh_with_turns(
-            step_file, output_dir, primary_turns, bobbin_params=bobbin_params,
-            core_type=core_type
-        )
+        import multiprocessing as _mp
+        import pickle as _pickle
+
+        def _gmsh_worker(step, outdir, turns_pkl, bobbin_pkl, ctype, result_file):
+            """Run gmsh meshing in isolated process (segfault-safe)."""
+            turns = _pickle.loads(turns_pkl)
+            bobbin = _pickle.loads(bobbin_pkl) if bobbin_pkl else None
+            try:
+                r = create_mesh_with_turns(step, outdir, turns,
+                                           bobbin_params=bobbin, core_type=ctype)
+                with open(result_file, 'wb') as f:
+                    _pickle.dump(r, f)
+            except Exception as e:
+                with open(result_file, 'wb') as f:
+                    _pickle.dump(e, f)
+
+        result_file = os.path.join(output_dir, "_gmsh_result.pkl")
+        p = _mp.Process(target=_gmsh_worker, args=(
+            step_file, output_dir,
+            _pickle.dumps(primary_turns),
+            _pickle.dumps(bobbin_params) if bobbin_params else None,
+            core_type, result_file,
+        ))
+        p.start()
+        p.join(timeout=600)
+        if p.is_alive():
+            p.kill()
+            p.join()
+            raise RuntimeError("gmsh timed out")
+        if p.exitcode != 0:
+            raise RuntimeError(f"gmsh process crashed (exit {p.exitcode})")
+        with open(result_file, 'rb') as f:
+            gmsh_result = _pickle.load(f)
+        os.remove(result_file)
+        if isinstance(gmsh_result, Exception):
+            raise gmsh_result
+        mesh_dir, body_numbers, turn_bodies = gmsh_result
+        gmsh_ok = True
         print(f"Mesh created: {mesh_dir}")
         print(f"Body numbers: {body_numbers}")
         print(f"Turn bodies: {len(turn_bodies)}")
     except Exception as e:
-        results['error'] = f"Meshing failed: {e}"
-        print(f"ERROR: {e}")
-        return results
-    
+        print(f"gmsh failed: {e}")
+        print("Trying Netgen fallback...")
+        try:
+            # Run Netgen in a subprocess too — the gmsh fork may have
+            # corrupted OCC internal state in the parent process.
+            def _netgen_worker(step, outdir, turns_pkl, ctype, result_file):
+                turns = _pickle.loads(turns_pkl)
+                try:
+                    r = create_mesh_with_netgen(step, outdir, turns, core_type=ctype)
+                    with open(result_file, 'wb') as f:
+                        _pickle.dump(r, f)
+                except Exception as ex:
+                    with open(result_file, 'wb') as f:
+                        _pickle.dump(ex, f)
+
+            result_file = os.path.join(output_dir, "_netgen_result.pkl")
+            p = _mp.Process(target=_netgen_worker, args=(
+                step_file, output_dir,
+                _pickle.dumps(primary_turns),
+                core_type, result_file,
+            ))
+            p.start()
+            p.join(timeout=600)
+            if p.is_alive():
+                p.kill()
+                p.join()
+                raise RuntimeError("Netgen timed out")
+            if p.exitcode != 0:
+                raise RuntimeError(f"Netgen process crashed (exit {p.exitcode})")
+            with open(result_file, 'rb') as f:
+                netgen_result = _pickle.load(f)
+            os.remove(result_file)
+            if isinstance(netgen_result, Exception):
+                raise netgen_result
+            mesh_dir, body_numbers, turn_bodies = netgen_result
+            used_netgen = True
+            print(f"Netgen mesh created: {mesh_dir}")
+            print(f"Body numbers: {body_numbers}")
+            print(f"Turn bodies: {len(turn_bodies)}")
+        except Exception as e2:
+            results['error'] = f"Meshing failed: {e2}"
+            print(f"ERROR: {e2}")
+            return results
+
+    # Use iterative solver only for very large meshes (UMFPack handles up to ~200K tets)
+    use_iterative = False
+
     # Generate SIF
     print("\n--- Generating SIF file ---")
     try:
@@ -1545,13 +2106,41 @@ def validate_mas_file(
                 turn_bodies,
                 core_permeability=core_permeability,
                 total_current=total_current,
+                core_type=core_type,
+                use_iterative_solver=use_iterative,
             )
         print(f"SIF file: {sif_path}")
     except Exception as e:
         results['error'] = f"SIF generation failed: {e}"
         print(f"ERROR: {e}")
         return results
-    
+
+    # Ensure ALL mesh bodies are defined in the SIF (Elmer requires it).
+    # Any undefined bodies get assigned air material.
+    elements_path = os.path.join(mesh_dir, "mesh.elements")
+    if os.path.exists(elements_path) and os.path.exists(sif_path):
+        mesh_bodies = set()
+        with open(elements_path) as ef:
+            for line in ef:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    mesh_bodies.add(int(parts[1]))
+        # Elmer expects ALL body IDs from 1 to max to be defined
+        max_body = max(mesh_bodies) if mesh_bodies else 0
+        all_needed = set(range(1, max_body + 1))
+        with open(sif_path) as sf:
+            sif_content = sf.read()
+        missing = [b for b in all_needed if f"Body {b}\n" not in sif_content]
+        if missing:
+            # Determine which equation ID to use (1 for MHD, 2 for CoilSolver)
+            eq_id = 1
+            extra = []
+            for b in missing:
+                extra.append(f"\nBody {b}\n  Name = \"Unclassified_{b}\"\n  Equation = {eq_id}\n  Material = 3\nEnd\n")
+            with open(sif_path, 'a') as sf:
+                sf.writelines(extra)
+            print(f"Added {len(missing)} unclassified bodies as air: {missing}")
+
     # Run simulation
     print("\n--- Running Elmer simulation ---")
     success, energy, output = run_elmer(output_dir)
@@ -1559,12 +2148,32 @@ def validate_mas_file(
     results['elmer_success'] = success
     results['electromagnetic_energy_J'] = energy
     
-    if not success:
-        results['error'] = "Elmer simulation failed"
-        # Print last part of output
-        print("Elmer failed. Last 1000 chars of output:")
-        print(output[-1000:])
-        return results
+    # Detect CoilSolver failure: energy near zero relative to expected value
+    energy_too_low = (energy is not None and L_analytical and L_analytical > 1e-8
+                      and energy < 0.5 * total_current**2 * L_analytical * 0.01)
+    if not success or energy_too_low:
+        if method == "coilsolver":
+            print("CoilSolver failed, retrying with tangential method...")
+            try:
+                sif_path = generate_sif_with_tangential_current(
+                    output_dir,
+                    body_numbers,
+                    turn_bodies,
+                    core_permeability=core_permeability,
+                    total_current=total_current,
+                    core_type=core_type,
+                    use_iterative_solver=use_iterative,
+                )
+                success, energy, output = run_elmer(output_dir)
+                results['elmer_success'] = success
+                results['electromagnetic_energy_J'] = energy
+            except Exception:
+                pass
+        if not success:
+            results['error'] = "Elmer simulation failed"
+            print("Elmer failed. Last 1000 chars of output:")
+            print(output[-1000:])
+            return results
     
     print(f"Simulation completed successfully!")
     print(f"Electromagnetic energy: {energy:.6e} J")

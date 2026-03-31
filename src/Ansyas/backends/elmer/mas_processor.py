@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import math
+import shutil
 import subprocess
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -26,10 +27,10 @@ if MVB_PATH not in sys.path:
     sys.path.insert(0, MVB_PATH)
 
 try:
-    import PyMKF
+    from PyOpenMagnetics import PyOpenMagnetics as PyOM
     HAS_PYMKF = True
 except ImportError:
-    PyMKF = None
+    PyOM = None
     HAS_PYMKF = False
 
 try:
@@ -64,8 +65,7 @@ class ElmerSimulationResult:
 def check_dependencies() -> Dict[str, bool]:
     """Check if all required dependencies are available."""
     # Check for ElmerSolver
-    elmer_path = os.path.expanduser("~/elmer/install/bin/ElmerSolver")
-    has_elmer = os.path.exists(elmer_path)
+    has_elmer = shutil.which("ElmerSolver") is not None
     
     return {
         "PyMKF": HAS_PYMKF,
@@ -108,7 +108,7 @@ def build_geometry_from_mas(
     # Process core with PyMKF if geometricalDescription is missing
     core = magnetic_data.get('core', {})
     if core.get('geometricalDescription') is None and HAS_PYMKF:
-        core = PyMKF.calculate_core_data(core, True)
+        core = PyOM.calculate_core_data(core, True)
         magnetic_data = {**magnetic_data, 'core': core}
     
     # Optionally limit turns for faster processing
@@ -301,19 +301,15 @@ def create_elmer_mesh(
         gmsh.finalize()
     
     # Convert to Elmer format with ElmerGrid
-    elmer_grid = os.path.expanduser("~/elmer/install/bin/ElmerGrid")
     mesh_dir = os.path.join(output_path, mesh_name)
-    
+
     # Build command - use basename since we're running in output_path
     msh_basename = os.path.basename(msh_path)
-    cmd = [elmer_grid, "14", "2", msh_basename, "-autoclean"]
+    cmd = ["ElmerGrid", "14", "2", msh_basename, "-autoclean"]
     if scale_to_meters:
         cmd.extend(["-scale", "0.001", "0.001", "0.001"])
-    
-    env = os.environ.copy()
-    env["PATH"] = os.path.expanduser("~/elmer/install/bin") + ":" + env.get("PATH", "")
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path, env=env)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
     
     # Check if mesh directory was created
     if not os.path.exists(mesh_dir):
@@ -504,19 +500,13 @@ def run_elmer_simulation(sim_dir: str, timeout: int = 300) -> ElmerSimulationRes
     ElmerSimulationResult
         Simulation results.
     """
-    elmer_solver = os.path.expanduser("~/elmer/install/bin/ElmerSolver")
-    
-    env = os.environ.copy()
-    env["PATH"] = os.path.expanduser("~/elmer/install/bin") + ":" + env.get("PATH", "")
-    
     try:
         result = subprocess.run(
-            [elmer_solver],
+            ["ElmerSolver"],
             cwd=sim_dir,
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=env
         )
         
         output = result.stdout + result.stderr

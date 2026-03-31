@@ -7,7 +7,7 @@ try:
 except ImportError:
     import MAS_models as MAS
 
-import PyMKF
+from PyOpenMagnetics import PyOpenMagnetics as PyOM
 
 
 def autocomplete(mas: [MAS.Mas, dict]):
@@ -58,6 +58,6 @@ def autocomplete(mas: [MAS.Mas, dict]):
     if "sectionAlignment" in mas["magnetic"]["coil"]:
         configuration["sectionAlignment"] = mas["magnetic"]["coil"]["sectionAlignment"]
 
-    mas = PyMKF.mas_autocomplete(mas, configuration)
+    mas = PyOM.mas_autocomplete(mas, configuration)
     mas = MAS.Mas.from_dict(mas)
     return mas

@@ -28,7 +28,7 @@ dependencies = [
   "cadquery",
   "OpenMagneticsVirtualBuilder",
   "numpy",
-  "PyMKF",
+  "PyOpenMagnetics",
 ]
 
 [project.optional-dependencies]

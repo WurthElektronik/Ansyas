@@ -41,8 +41,8 @@ class TestAllMasExamples(unittest.TestCase):
         if os.path.exists(material_file_path):
             with open(material_file_path, 'r') as material_file:
                 material_data = material_file.read()
-                import PyMKF
-                PyMKF.load_core_materials(material_data)
+                from PyOpenMagnetics import PyOpenMagnetics as PyOM
+                PyOM.load_core_materials(material_data)
     
     def _run_simulation(self, mas_file: str, project_name: str):
         """Run a simulation and verify it completes."""
