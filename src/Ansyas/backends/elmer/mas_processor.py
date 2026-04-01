@@ -1,15 +1,16 @@
 """
 MAS data processor for Elmer FEM simulations.
 
-This module provides functions to:
-1. Build 3D geometry using OpenMagneticsVirtualBuilder
-2. Import geometry into gmsh for meshing with physical groups
-3. Convert mesh to Elmer format with ElmerGrid
-4. Setup and run Elmer simulation
-5. Extract results (inductance, losses, etc.)
+This module provides the main entry point for running Elmer FEM simulations
+on MAS magnetic component descriptions. It handles:
+1. Loading and normalizing MAS data (both simple and complete formats)
+2. Building 3D geometry using OpenMagneticsVirtualBuilder
+3. Meshing with gmsh (subprocess-safe) + Netgen fallback
+4. Running magnetostatic/harmonic Elmer simulations
+5. Extracting results into MAS Outputs format
 
-The workflow bridges the MAS magnetic component format with Elmer's
-mesh-based FEM requirements.
+The proven simulation logic lives in tests/validate_elmer_inductance.py.
+This module wraps it with proper MAS I/O handling.
 """
 
 import os
@@ -19,19 +20,22 @@ import math
 import shutil
 import subprocess
 from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-# Add MVB path if not already in system
+# Add paths
 MVB_PATH = os.path.expanduser("~/OpenMagnetics/MVB/src")
-if MVB_PATH not in sys.path:
-    sys.path.insert(0, MVB_PATH)
+ANSYAS_PATH = os.path.expanduser("~/wuerth/Ansyas/src")
+TESTS_PATH = os.path.expanduser("~/wuerth/Ansyas/tests")
+for path in [MVB_PATH, ANSYAS_PATH, TESTS_PATH]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 try:
     from PyOpenMagnetics import PyOpenMagnetics as PyOM
-    HAS_PYMKF = True
+    HAS_PYOM = True
 except ImportError:
     PyOM = None
-    HAS_PYMKF = False
+    HAS_PYOM = False
 
 try:
     from OpenMagneticsVirtualBuilder.builder import Builder
@@ -40,597 +44,462 @@ except ImportError:
     HAS_MVB = False
     Builder = None
 
+# Import proven simulation functions from validation script
+from validate_elmer_inductance import (
+    TurnInfo,
+    load_mas_file,
+    get_core_data,
+    extract_turns_info,
+    get_material_permeability,
+    calculate_analytical_inductance,
+    build_geometry,
+    create_mesh_with_turns,
+    create_mesh_with_netgen,
+    generate_sif_with_coil_solver,
+    generate_sif_with_tangential_current,
+    run_elmer,
+    calculate_inductance_from_energy,
+)
+
+# Import MAS models
 try:
-    import gmsh
-    HAS_GMSH = True
+    import MAS_models as MAS
+    HAS_MAS = True
 except ImportError:
-    HAS_GMSH = False
-    gmsh = None
+    MAS = None
+    HAS_MAS = False
 
 
 @dataclass
-class ElmerSimulationResult:
-    """Container for Elmer simulation results."""
-    
-    success: bool
-    vtu_path: Optional[str] = None
-    electromagnetic_energy: float = 0.0
-    eddy_current_power: float = 0.0
-    inductance: float = 0.0
-    max_b_field: float = 0.0
-    max_h_field: float = 0.0
-    error_message: str = ""
+class SimulationConfig:
+    """Configuration for a single simulation run."""
+    max_turns: Optional[int] = None
+    total_current: float = 1.0
+    method: str = "coilsolver"
+    include_bobbin: bool = True
+    timeout: int = 600
 
 
 def check_dependencies() -> Dict[str, bool]:
     """Check if all required dependencies are available."""
-    # Check for ElmerSolver
-    has_elmer = shutil.which("ElmerSolver") is not None
-    
     return {
-        "PyMKF": HAS_PYMKF,
+        "PyOpenMagnetics": HAS_PYOM,
         "MVB": HAS_MVB,
-        "gmsh": HAS_GMSH,
-        "ElmerSolver": has_elmer,
+        "ElmerSolver": shutil.which("ElmerSolver") is not None,
+        "ElmerGrid": shutil.which("ElmerGrid") is not None,
+        "MAS_models": HAS_MAS,
     }
 
 
-def build_geometry_from_mas(
-    magnetic_data: Dict,
-    output_path: str,
-    project_name: str = "magnetic",
-    max_turns_per_winding: Optional[int] = None,
-) -> Tuple[str, str]:
+def normalize_mas_data(data: Dict) -> Tuple[Dict, List[Dict]]:
     """
-    Build 3D geometry from MAS magnetic data using MVB.
-    
-    Parameters
-    ----------
-    magnetic_data : dict
-        MAS magnetic section with 'core' and 'coil' keys.
-    output_path : str
-        Directory to save output files.
-    project_name : str
-        Name prefix for output files.
-    max_turns_per_winding : int, optional
-        Limit turns per winding for faster meshing (useful for testing).
-        
-    Returns
-    -------
-    Tuple[str, str]
-        Paths to (step_file, stl_file).
+    Normalize MAS data from either simple or complete format.
+
+    Simple format: {"magnetic": {...}, "operatingPoints": [...]}
+    Complete format: {"inputs": {"operatingPoints": [...]}, "magnetic": {...}, "outputs": [...]}
+
+    Returns:
+        (magnetic_data, operating_points)
     """
-    if not HAS_MVB:
-        raise ImportError("OpenMagneticsVirtualBuilder is required")
-    
-    os.makedirs(output_path, exist_ok=True)
-    
-    # Process core with PyMKF if geometricalDescription is missing
+    magnetic = data.get('magnetic', data)
+
+    # Operating points can be at top level or under inputs
+    operating_points = data.get('operatingPoints',
+                        magnetic.get('operatingPoints',
+                        data.get('inputs', {}).get('operatingPoints', [])))
+
+    return magnetic, operating_points
+
+
+def autocomplete_magnetic(magnetic: Dict) -> Dict:
+    """Run PyOpenMagnetics autocomplete to fill in missing coil/core data."""
+    if not HAS_PYOM:
+        raise ImportError("PyOpenMagnetics required for autocomplete")
+
+    result = PyOM.magnetic_autocomplete(magnetic, {})
+    if isinstance(result, str):
+        if result.startswith('Exception:'):
+            raise ValueError(f"Autocomplete failed: {result}")
+        return json.loads(result)
+    return result
+
+
+def detect_core_type(magnetic_data: Dict) -> str:
+    """Detect whether core is concentric or toroidal from MAS data."""
     core = magnetic_data.get('core', {})
-    if core.get('geometricalDescription') is None and HAS_PYMKF:
-        core = PyOM.calculate_core_data(core, True)
-        magnetic_data = {**magnetic_data, 'core': core}
-    
-    # Optionally limit turns for faster processing
-    if max_turns_per_winding is not None:
-        coil = magnetic_data.get('coil', {}).copy()
-        turns_desc = coil.get('turnsDescription', [])
-        
-        if turns_desc:
-            # Group turns by winding
-            windings = {}
-            for turn in turns_desc:
-                winding_name = turn.get('name', '').split(' ')[0].lower()
-                if winding_name not in windings:
-                    windings[winding_name] = []
-                windings[winding_name].append(turn)
-            
-            # Limit turns per winding
-            limited_turns = []
-            for winding_name, winding_turns in windings.items():
-                limited_turns.extend(winding_turns[:max_turns_per_winding])
-            
-            coil['turnsDescription'] = limited_turns
-            magnetic_data = {**magnetic_data, 'coil': coil}
-    
-    # Build geometry with MVB
-    builder = Builder()
-    result = builder.get_magnetic(
-        magnetic_data,
-        project_name=project_name,
-        output_path=output_path,
-        export_files=True
-    )
-    
-    if isinstance(result, tuple):
-        return result  # (step_path, stl_path)
-    else:
-        step_path = os.path.join(output_path, f"{project_name}.step")
-        stl_path = os.path.join(output_path, f"{project_name}.stl")
-        return step_path, stl_path
+    func_desc = core.get('functionalDescription', {})
+    shape = func_desc.get('shape', {})
+    shape_name = shape.get('name', '') if isinstance(shape, dict) else str(shape)
+
+    # Toroidal shapes start with 'T' (e.g., T 40/24/15)
+    if shape_name.strip().startswith('T ') or shape_name.strip().startswith('T_'):
+        return 'toroidal'
+    # Also check family
+    family = shape.get('family', '') if isinstance(shape, dict) else ''
+    if 'toroid' in family.lower():
+        return 'toroidal'
+    return 'concentric'
 
 
-def create_elmer_mesh(
-    step_file: str,
+def get_winding_names(magnetic_data: Dict) -> List[str]:
+    """Get list of winding names from MAS coil functionalDescription."""
+    coil = magnetic_data.get('coil', {})
+    func_desc = coil.get('functionalDescription', [])
+    return [w.get('name', f'Winding {i}') for i, w in enumerate(func_desc)]
+
+
+def run_magnetostatic_inductance(
+    mas_file_or_data,
     output_path: str,
-    mesh_name: str = "mesh",
-    air_padding: float = 10.0,
-    max_element_size: float = 4.0,
-    min_element_size: float = 1.0,
-    scale_to_meters: bool = True,
-) -> Tuple[str, Dict[str, int]]:
+    config: Optional[SimulationConfig] = None,
+) -> Dict[str, Any]:
     """
-    Create Elmer-compatible mesh from STEP geometry.
-    
+    Run magnetostatic simulation for inductance extraction.
+
+    This is the main entry point. It handles:
+    - Loading and normalizing MAS data
+    - Autocompleting missing coil/core geometry
+    - Building 3D geometry, meshing, running Elmer
+    - Returning results in a structured dict
+
     Parameters
     ----------
-    step_file : str
-        Path to STEP geometry file.
+    mas_file_or_data : str or dict
+        Path to MAS JSON file, or pre-loaded MAS data dict.
     output_path : str
-        Directory for output mesh.
-    mesh_name : str
-        Name for mesh files.
-    air_padding : float
-        Padding around geometry for air region (mm).
-    max_element_size : float
-        Maximum mesh element size (mm).
-    min_element_size : float
-        Minimum mesh element size (mm).
-    scale_to_meters : bool
-        Scale from mm to meters using ElmerGrid.
-        
+        Directory for output files.
+    config : SimulationConfig, optional
+        Simulation configuration. Defaults to sensible values.
+
     Returns
     -------
-    Tuple[str, Dict[str, int]]
-        Path to Elmer mesh directory and dict of body numbers.
+    dict with keys:
+        success, magnetic_data, core_type, num_turns, core_permeability,
+        analytical_inductance_H, elmer_inductance_H, error_percent,
+        electromagnetic_energy_J, winding_names, ...
     """
-    if not HAS_GMSH:
-        raise ImportError("gmsh is required for mesh generation")
-    
+    if config is None:
+        config = SimulationConfig()
+
     os.makedirs(output_path, exist_ok=True)
-    
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Verbosity", 2)
-    gmsh.model.add("magnetic")
-    
+    results = {'success': False}
+
+    # Load data
+    if isinstance(mas_file_or_data, str):
+        with open(mas_file_or_data) as f:
+            raw_data = json.load(f)
+        results['mas_file'] = mas_file_or_data
+    else:
+        raw_data = mas_file_or_data
+
+    magnetic_data, operating_points = normalize_mas_data(raw_data)
+    results['operating_points_count'] = len(operating_points)
+
+    # Autocomplete
+    print("Auto-completing magnetic data...")
+    magnetic_data = autocomplete_magnetic(magnetic_data)
+
+    core_type = detect_core_type(magnetic_data)
+    results['core_type'] = core_type
+    winding_names = get_winding_names(magnetic_data)
+    results['winding_names'] = winding_names
+    print(f"Core type: {core_type}, Windings: {winding_names}")
+
+    # Extract turns info
+    turns_info = extract_turns_info(magnetic_data, core_type)
+    num_turns = len(turns_info)
+    results['total_turns'] = num_turns
+
+    # Apply turn limit if set
+    if config.max_turns and config.max_turns < num_turns:
+        primary_turns = [t for t in turns_info if 'primary' in t.winding.lower() or
+                         'winding 1' in t.winding.lower() or
+                         t.winding == winding_names[0]][:config.max_turns]
+        num_sim_turns = len(primary_turns)
+    else:
+        primary_turns = [t for t in turns_info if 'primary' in t.winding.lower() or
+                         'winding 1' in t.winding.lower() or
+                         t.winding == winding_names[0]]
+        num_sim_turns = len(primary_turns)
+
+    results['simulated_turns'] = num_sim_turns
+    print(f"Total turns: {num_turns}, Simulating: {num_sim_turns} primary turns")
+
+    if num_sim_turns == 0:
+        results['error'] = "No primary turns found"
+        return results
+
+    # Get core permeability
+    core_data = get_core_data(magnetic_data)
+    func_desc = core_data.get('functionalDescription', {})
+    mat = func_desc.get('material', 'N87')
+    if isinstance(mat, dict):
+        mat = mat.get('name', 'N87')
+    core_permeability = get_material_permeability(mat)
+    results['core_permeability'] = core_permeability
+    results['material_name'] = mat
+
+    # Analytical inductance
+    L_analytical = calculate_analytical_inductance(core_data, num_sim_turns)
+    if L_analytical:
+        results['analytical_inductance_H'] = L_analytical
+        print(f"Analytical inductance: {L_analytical*1e6:.2f} uH")
+
+    # Build geometry
+    print("Building geometry...")
     try:
-        # Import STEP geometry
-        entities = gmsh.model.occ.importShapes(step_file)
-        gmsh.model.occ.synchronize()
-        
-        # Get volumes and classify
-        volumes = gmsh.model.getEntities(3)
-        core_tags = []
-        coil_tags = []
-        
-        for dim, tag in volumes:
-            bbox = gmsh.model.getBoundingBox(dim, tag)
-            width = max(bbox[3]-bbox[0], bbox[4]-bbox[1])
-            height = bbox[5] - bbox[2]
-            
-            # Core pieces are larger (>25mm width or >15mm height)
-            if width > 25 or height > 15:
-                core_tags.append(tag)
-            else:
-                coil_tags.append(tag)
-        
-        # Create air box
-        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
-        air_box = gmsh.model.occ.addBox(
-            xmin - air_padding, ymin - air_padding, zmin - air_padding,
-            (xmax - xmin) + 2*air_padding,
-            (ymax - ymin) + 2*air_padding,
-            (zmax - zmin) + 2*air_padding
+        step_file, core_type_detected = build_geometry(
+            magnetic_data, output_path,
+            max_turns=config.max_turns,
+            include_bobbin=config.include_bobbin,
         )
-        
-        # Fragment to create conformal mesh
-        all_volumes = [(3, v[1]) for v in volumes]
-        gmsh.model.occ.fragment([(3, air_box)], all_volumes)
-        gmsh.model.occ.synchronize()
-        
-        # Re-identify volumes after fragmentation
-        new_volumes = gmsh.model.getEntities(3)
-        new_core = []
-        new_coil = []
-        new_air = []
-        
-        for dim, tag in new_volumes:
-            bbox = gmsh.model.getBoundingBox(dim, tag)
-            vol = (bbox[3]-bbox[0]) * (bbox[4]-bbox[1]) * (bbox[5]-bbox[2])
-            width = max(bbox[3]-bbox[0], bbox[4]-bbox[1])
-            
-            if vol > 50000:  # Air (largest)
-                new_air.append(tag)
-            elif width > 25:  # Core
-                new_core.append(tag)
-            else:  # Coil
-                new_coil.append(tag)
-        
-        # Create physical groups with specific tags
-        body_numbers = {}
-        
-        if new_core:
-            gmsh.model.addPhysicalGroup(3, new_core, tag=1, name="core")
-            body_numbers["core"] = 1
-        
-        if new_coil:
-            gmsh.model.addPhysicalGroup(3, new_coil, tag=2, name="coil")
-            body_numbers["coil"] = 2
-        
-        if new_air:
-            gmsh.model.addPhysicalGroup(3, new_air, tag=3, name="air")
-            body_numbers["air"] = 3
-        
-        # Outer boundary
-        outer_bbox = [xmin - air_padding, ymin - air_padding, zmin - air_padding,
-                      xmax + air_padding, ymax + air_padding, zmax + air_padding]
-        surfaces = gmsh.model.getEntities(2)
-        outer_surfs = []
-        tol = 0.5
-        
-        for dim, tag in surfaces:
-            bbox = gmsh.model.getBoundingBox(dim, tag)
-            on_outer = (abs(bbox[0] - outer_bbox[0]) < tol or 
-                        abs(bbox[3] - outer_bbox[3]) < tol or
-                        abs(bbox[1] - outer_bbox[1]) < tol or 
-                        abs(bbox[4] - outer_bbox[4]) < tol or
-                        abs(bbox[2] - outer_bbox[2]) < tol or 
-                        abs(bbox[5] - outer_bbox[5]) < tol)
-            if on_outer:
-                outer_surfs.append(tag)
-        
-        if outer_surfs:
-            gmsh.model.addPhysicalGroup(2, outer_surfs, tag=4, name="outer_boundary")
-            body_numbers["outer_boundary"] = 1  # After renumbering
-        
-        # Mesh settings
-        gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", min_element_size)
-        gmsh.option.setNumber("Mesh.Algorithm3D", 4)  # Frontal3D
-        gmsh.option.setNumber("Mesh.Optimize", 1)
-        
-        # Generate mesh
-        gmsh.model.mesh.generate(3)
-        
-        # Save mesh in gmsh 2.2 format for ElmerGrid
-        gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
-        msh_path = os.path.join(output_path, f"{mesh_name}.msh")
-        gmsh.write(msh_path)
-        
-    finally:
-        gmsh.finalize()
-    
-    # Convert to Elmer format with ElmerGrid
-    mesh_dir = os.path.join(output_path, mesh_name)
+        results['step_file'] = step_file
+        print(f"Geometry: {step_file}")
+    except Exception as e:
+        results['error'] = f"Geometry build failed: {e}"
+        print(f"ERROR: {e}")
+        return results
 
-    # Build command - use basename since we're running in output_path
-    msh_basename = os.path.basename(msh_path)
-    cmd = ["ElmerGrid", "14", "2", msh_basename, "-autoclean"]
-    if scale_to_meters:
-        cmd.extend(["-scale", "0.001", "0.001", "0.001"])
+    # Mesh — gmsh in subprocess, Netgen fallback
+    print("Creating mesh...")
+    import multiprocessing as _mp
+    import pickle as _pickle
 
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
-    
-    # Check if mesh directory was created
-    if not os.path.exists(mesh_dir):
-        raise RuntimeError(f"ElmerGrid failed to create mesh directory: {result.stderr}")
-    
-    return mesh_dir, body_numbers
+    mesh_dir = None
+    body_numbers = None
+    turn_bodies = None
 
+    # Get bobbin params for mesh classification
+    bobbin_params = None
+    coil = magnetic_data.get('coil', {})
+    bobbin = coil.get('bobbin', {})
+    if bobbin:
+        bd = bobbin.get('processedDescription', bobbin.get('functionalDescription', {}))
+        if isinstance(bd, list) and bd:
+            bd = bd[0]
+        if isinstance(bd, dict):
+            cw = bd.get('columnWidth') or bd.get('wallThickness', 0)
+            cd = bd.get('columnDepth') or cw
+            cs = bd.get('columnShape', 'round')
+            if cw:
+                bobbin_params = {
+                    'column_width': cw * 1000,
+                    'column_depth': cd * 1000,
+                    'column_shape': cs,
+                }
 
-def generate_sif_file(
-    output_path: str,
-    mesh_dir: str,
-    body_numbers: Dict[str, int],
-    core_permeability: float = 2000.0,
-    current_density: float = 1.0e6,
-    simulation_type: str = "magnetostatic",
-) -> str:
-    """
-    Generate Elmer SIF file for magnetostatic simulation.
-    
-    Parameters
-    ----------
-    output_path : str
-        Directory to save SIF file.
-    mesh_dir : str
-        Path to Elmer mesh directory.
-    body_numbers : dict
-        Dictionary mapping body names to body numbers.
-    core_permeability : float
-        Relative permeability of core material.
-    current_density : float
-        Current density in coil (A/m^2).
-    simulation_type : str
-        Type of simulation ('magnetostatic', 'eddy_current').
-        
-    Returns
-    -------
-    str
-        Path to generated SIF file.
-    """
-    mesh_rel = os.path.basename(mesh_dir)
-    
-    sif_content = f'''! Elmer {simulation_type} simulation
-! Generated by Ansyas Elmer backend
+    # Try gmsh in subprocess (segfault-safe)
+    def _gmsh_worker(step, outdir, turns_pkl, bobbin_pkl, ctype, result_file):
+        turns = _pickle.loads(turns_pkl)
+        bobbin = _pickle.loads(bobbin_pkl) if bobbin_pkl else None
+        try:
+            r = create_mesh_with_turns(step, outdir, turns,
+                                       bobbin_params=bobbin, core_type=ctype)
+            with open(result_file, 'wb') as f:
+                _pickle.dump(r, f)
+        except Exception as e:
+            with open(result_file, 'wb') as f:
+                _pickle.dump(e, f)
 
-Check Keywords "Warn"
-
-Header
-  Mesh DB "." "{mesh_rel}"
-  Results Directory "."
-End
-
-Simulation
-  Coordinate System = Cartesian 3D
-  Simulation Type = Steady State
-  Steady State Max Iterations = 1
-  Max Output Level = 5
-End
-
-Constants
-  Permittivity Of Vacuum = 8.854e-12
-  Permeability Of Vacuum = 1.2566e-6
-End
-
-! Materials
-Material 1
-  Name = "Ferrite"
-  Relative Permeability = {core_permeability}
-  Electric Conductivity = 0.0
-End
-
-Material 2
-  Name = "Copper"
-  Relative Permeability = 1.0
-  Electric Conductivity = 5.96e7
-End
-
-Material 3
-  Name = "Air"
-  Relative Permeability = 1.0
-  Electric Conductivity = 0.0
-End
-
-! Bodies
-Body 1
-  Name = "Core"
-  Equation = 1
-  Material = 1
-End
-
-Body 2
-  Name = "Coil"
-  Equation = 1
-  Material = 2
-  Body Force = 1
-End
-
-Body 3
-  Name = "Air"
-  Equation = 1
-  Material = 3
-End
-
-! Current density body force
-Body Force 1
-  Name = "CurrentDensity"
-  Current Density 3 = Real {current_density}
-End
-
-! Equation
-Equation 1
-  Name = "MagnetoDynamics"
-  Active Solvers(3) = 1 2 3
-End
-
-! Solvers
-Solver 1
-  Equation = MGDynamics
-  Procedure = "MagnetoDynamics" "WhitneyAVSolver"
-  Variable = AV
-  
-  Linear System Solver = Direct
-  Linear System Direct Method = UMFPACK
-  
-  Steady State Convergence Tolerance = 1.0e-8
-End
-
-Solver 2
-  Equation = MGDynamicsCalc
-  Procedure = "MagnetoDynamics" "MagnetoDynamicsCalcFields"
-  
-  Potential Variable = "AV"
-  Calculate Magnetic Field Strength = True
-  Calculate Magnetic Flux Density = True
-  Calculate Current Density = True
-  Calculate Electric Field = False
-  
-  Linear System Solver = Iterative
-  Linear System Iterative Method = CG
-  Linear System Max Iterations = 5000
-  Linear System Convergence Tolerance = 1.0e-8
-  Linear System Preconditioning = ILU0
-  
-  Steady State Convergence Tolerance = 1.0e-6
-End
-
-Solver 3
-  Equation = ResultOutput
-  Exec Solver = After Timestep
-  Procedure = "ResultOutputSolve" "ResultOutputSolver"
-  
-  Output File Name = "results"
-  Vtu Format = True
-  Save Geometry Ids = True
-End
-
-! Boundary condition
-Boundary Condition 1
-  Name = "OuterBoundary"
-  AV {{e}} = 0.0
-End
-'''
-    
-    sif_path = os.path.join(output_path, "case.sif")
-    with open(sif_path, 'w') as f:
-        f.write(sif_content)
-    
-    # Create STARTINFO file
-    startinfo_path = os.path.join(output_path, "ELMERSOLVER_STARTINFO")
-    with open(startinfo_path, 'w') as f:
-        f.write("case.sif\n")
-    
-    return sif_path
-
-
-def run_elmer_simulation(sim_dir: str, timeout: int = 300) -> ElmerSimulationResult:
-    """
-    Run ElmerSolver on a prepared simulation.
-    
-    Parameters
-    ----------
-    sim_dir : str
-        Simulation directory containing case.sif.
-    timeout : int
-        Timeout in seconds.
-        
-    Returns
-    -------
-    ElmerSimulationResult
-        Simulation results.
-    """
     try:
-        result = subprocess.run(
-            ["ElmerSolver"],
-            cwd=sim_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        
-        output = result.stdout + result.stderr
-        
-        # Parse results from output
-        em_energy = 0.0
-        eddy_power = 0.0
-        
-        import re
-        for line in output.split('\n'):
-            if 'ElectroMagnetic Field Energy:' in line:
-                try:
-                    # Extract the number after "Energy:"
-                    match = re.search(r'Energy:\s+([\d.E+-]+)', line)
-                    if match:
-                        em_energy = float(match.group(1))
-                except:
-                    pass
-            elif 'Eddy current power:' in line:
-                try:
-                    # Extract the number after "power:"
-                    match = re.search(r'power:\s+([\d.E+-]+)', line)
-                    if match:
-                        eddy_power = float(match.group(1))
-                except:
-                    pass
-        
-        # Find VTU file
-        vtu_path = None
-        mesh_dir = os.path.join(sim_dir, "mesh")
-        if os.path.exists(mesh_dir):
-            for f in os.listdir(mesh_dir):
-                if f.endswith('.vtu'):
-                    vtu_path = os.path.join(mesh_dir, f)
-                    break
-        
-        # Check if simulation succeeded
-        if result.returncode == 0 and 'ALL DONE' in output:
-            return ElmerSimulationResult(
-                success=True,
-                vtu_path=vtu_path,
-                electromagnetic_energy=em_energy,
-                eddy_current_power=eddy_power,
+        result_file = os.path.join(output_path, "_mesh_result.pkl")
+        p = _mp.Process(target=_gmsh_worker, args=(
+            step_file, output_path,
+            _pickle.dumps(primary_turns),
+            _pickle.dumps(bobbin_params) if bobbin_params else None,
+            core_type, result_file,
+        ))
+        p.start()
+        p.join(timeout=config.timeout)
+        if p.is_alive():
+            p.kill()
+            p.join()
+            raise RuntimeError("gmsh timed out")
+        if p.exitcode != 0:
+            raise RuntimeError(f"gmsh crashed (exit {p.exitcode})")
+        with open(result_file, 'rb') as f:
+            mesh_result = _pickle.load(f)
+        os.remove(result_file)
+        if isinstance(mesh_result, Exception):
+            raise mesh_result
+        mesh_dir, body_numbers, turn_bodies = mesh_result
+        print(f"Mesh (gmsh): {mesh_dir}, {len(turn_bodies)} turn bodies")
+    except Exception as e:
+        print(f"gmsh failed: {e}, trying Netgen...")
+
+        # Netgen in subprocess (OCC state isolation)
+        def _netgen_worker(step, outdir, turns_pkl, ctype, result_file):
+            turns = _pickle.loads(turns_pkl)
+            try:
+                r = create_mesh_with_netgen(step, outdir, turns, core_type=ctype)
+                with open(result_file, 'wb') as f:
+                    _pickle.dump(r, f)
+            except Exception as ex:
+                with open(result_file, 'wb') as f:
+                    _pickle.dump(ex, f)
+
+        try:
+            result_file = os.path.join(output_path, "_mesh_result.pkl")
+            p = _mp.Process(target=_netgen_worker, args=(
+                step_file, output_path,
+                _pickle.dumps(primary_turns),
+                core_type, result_file,
+            ))
+            p.start()
+            p.join(timeout=config.timeout)
+            if p.is_alive():
+                p.kill()
+                p.join()
+                raise RuntimeError("Netgen timed out")
+            if p.exitcode != 0:
+                raise RuntimeError(f"Netgen crashed (exit {p.exitcode})")
+            with open(result_file, 'rb') as f:
+                mesh_result = _pickle.load(f)
+            os.remove(result_file)
+            if isinstance(mesh_result, Exception):
+                raise mesh_result
+            mesh_dir, body_numbers, turn_bodies = mesh_result
+            print(f"Mesh (Netgen): {mesh_dir}, {len(turn_bodies)} turn bodies")
+        except Exception as e2:
+            results['error'] = f"Meshing failed: {e2}"
+            print(f"ERROR: {e2}")
+            return results
+
+    results['mesh_dir'] = mesh_dir
+    results['body_numbers'] = body_numbers
+
+    # Generate SIF
+    print("Generating SIF...")
+    try:
+        if config.method == "coilsolver":
+            sif_path = generate_sif_with_coil_solver(
+                output_path, body_numbers, turn_bodies,
+                core_permeability=core_permeability,
+                total_current=config.total_current,
+                num_turns=num_sim_turns,
+                core_type=core_type,
             )
         else:
-            return ElmerSimulationResult(
-                success=False,
-                error_message=output[-1000:] if len(output) > 1000 else output
+            sif_path = generate_sif_with_tangential_current(
+                output_path, body_numbers, turn_bodies,
+                core_permeability=core_permeability,
+                total_current=config.total_current,
+                core_type=core_type,
             )
-            
-    except subprocess.TimeoutExpired:
-        return ElmerSimulationResult(
-            success=False,
-            error_message=f"Simulation timed out after {timeout} seconds"
-        )
+        results['sif_path'] = sif_path
     except Exception as e:
-        return ElmerSimulationResult(
-            success=False,
-            error_message=str(e)
-        )
+        results['error'] = f"SIF generation failed: {e}"
+        return results
 
+    # Patch SIF: ensure all body IDs 1..max are defined
+    elements_path = os.path.join(mesh_dir, "mesh.elements")
+    if os.path.exists(elements_path):
+        mesh_bodies = set()
+        with open(elements_path) as ef:
+            for line in ef:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    mesh_bodies.add(int(parts[1]))
+        max_body = max(mesh_bodies) if mesh_bodies else 0
+        with open(sif_path) as sf:
+            sif_content = sf.read()
+        missing = [b for b in range(1, max_body + 1) if f"Body {b}\n" not in sif_content]
+        if missing:
+            with open(sif_path, 'a') as sf:
+                for b in missing:
+                    sf.write(f"\nBody {b}\n  Name = \"Unclassified_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
+            print(f"Added {len(missing)} unclassified bodies as air")
 
-def extract_results(vtu_path: str, current: float = 1.0) -> Dict[str, Any]:
-    """
-    Extract simulation results from VTU file.
-    
-    Parameters
-    ----------
-    vtu_path : str
-        Path to VTU results file.
-    current : float
-        Applied current (A) for inductance calculation.
-        
-    Returns
-    -------
-    dict
-        Dictionary with extracted results.
-    """
-    try:
-        import pyvista as pv
-        import numpy as np
-    except ImportError:
-        return {"error": "pyvista not installed"}
-    
-    mesh = pv.read(vtu_path)
-    
-    results = {
-        "num_points": mesh.n_points,
-        "num_cells": mesh.n_cells,
-    }
-    
-    if "magnetic flux density" in mesh.array_names:
-        B = mesh["magnetic flux density"]
-        B_mag = np.linalg.norm(B, axis=1)
-        results["B_max"] = float(np.max(B_mag))
-        results["B_mean"] = float(np.mean(B_mag))
-    
-    if "magnetic field strength" in mesh.array_names:
-        H = mesh["magnetic field strength"]
-        H_mag = np.linalg.norm(H, axis=1)
-        results["H_max"] = float(np.max(H_mag))
-        results["H_mean"] = float(np.mean(H_mag))
-    
-    if "current density" in mesh.array_names:
-        J = mesh["current density"]
-        J_mag = np.linalg.norm(J, axis=1)
-        results["J_max"] = float(np.max(J_mag))
-        results["J_mean"] = float(np.mean(J_mag))
-    
+    # Run Elmer
+    print("Running Elmer...")
+    success, energy, output = run_elmer(output_path, timeout=config.timeout)
+    results['elmer_success'] = success
+    results['electromagnetic_energy_J'] = energy
+
+    # CoilSolver fallback to tangential
+    if not success and config.method == "coilsolver":
+        print("CoilSolver failed, retrying with tangential...")
+        try:
+            sif_path = generate_sif_with_tangential_current(
+                output_path, body_numbers, turn_bodies,
+                core_permeability=core_permeability,
+                total_current=config.total_current,
+                core_type=core_type,
+            )
+            # Re-patch missing bodies
+            with open(sif_path) as sf:
+                sif_content = sf.read()
+            missing = [b for b in range(1, max_body + 1) if f"Body {b}\n" not in sif_content]
+            if missing:
+                with open(sif_path, 'a') as sf:
+                    for b in missing:
+                        sf.write(f"\nBody {b}\n  Name = \"Unclassified_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
+            success, energy, output = run_elmer(output_path, timeout=config.timeout)
+            results['elmer_success'] = success
+            results['electromagnetic_energy_J'] = energy
+        except Exception:
+            pass
+
+    if not success:
+        results['error'] = "Elmer simulation failed"
+        return results
+
+    # Calculate inductance
+    L_elmer = calculate_inductance_from_energy(energy, config.total_current)
+    results['elmer_inductance_H'] = L_elmer
+    results['elmer_inductance_uH'] = L_elmer * 1e6
+
+    if L_analytical:
+        error_pct = abs(L_elmer - L_analytical) / L_analytical * 100
+        results['error_percent'] = error_pct
+        results['success'] = error_pct < 25.0
+        print(f"Inductance: analytical={L_analytical*1e6:.2f} uH, "
+              f"FEM={L_elmer*1e6:.2f} uH, error={error_pct:.1f}%")
+    else:
+        results['success'] = True
+        print(f"Inductance: FEM={L_elmer*1e6:.2f} uH (no analytical reference)")
+
     return results
+
+
+def build_mas_outputs(results: Dict, operating_points: List[Dict] = None) -> Optional[Any]:
+    """
+    Build MAS.Outputs object from simulation results.
+
+    Returns MAS.Outputs or None if MAS_models not available.
+    """
+    if not HAS_MAS:
+        return None
+
+    L_H = results.get('elmer_inductance_H', 0)
+
+    # Magnetizing inductance
+    mag_ind = MAS.MagnetizingInductanceOutput(
+        magnetizingInductance=MAS.DimensionWithTolerance(nominal=L_H),
+        methodUsed="Elmer FEM (CoilSolver, magnetostatic)",
+        origin=MAS.ResultOrigin.simulation,
+    )
+
+    outputs = MAS.Outputs(
+        magnetizingInductance=mag_ind,
+    )
+
+    return outputs
 
 
 def run_mas_simulation(
     mas_file: str,
     output_path: str,
     max_turns_per_winding: Optional[int] = None,
-    core_permeability: float = 2000.0,
-    current_density: float = 1.0e6,
+    total_current: float = 1.0,
+    method: str = "coilsolver",
 ) -> Dict[str, Any]:
     """
     Run complete Elmer simulation from MAS file.
-    
-    This is the main entry point for MAS-to-Elmer workflow.
-    
+
+    This is the main entry point for the MAS-to-Elmer workflow.
+    Handles both simple format (examples/) and complete format (examples/complete/).
+
     Parameters
     ----------
     mas_file : str
@@ -638,94 +507,59 @@ def run_mas_simulation(
     output_path : str
         Directory for output files.
     max_turns_per_winding : int, optional
-        Limit turns per winding for faster meshing.
-    core_permeability : float
-        Relative permeability of core material.
-    current_density : float
-        Current density in coil (A/m^2).
-        
+        Limit turns per winding. None = use all turns.
+    total_current : float
+        Test current in Amperes.
+    method : str
+        "coilsolver" or "tangential".
+
     Returns
     -------
     dict
-        Simulation results and metadata.
+        Simulation results including inductance, energy, MAS outputs.
     """
-    # Check dependencies
-    deps = check_dependencies()
-    missing = [k for k, v in deps.items() if not v]
-    if missing:
-        return {"error": f"Missing dependencies: {missing}"}
-    
-    os.makedirs(output_path, exist_ok=True)
-    
-    # Load MAS file
+    config = SimulationConfig(
+        max_turns=max_turns_per_winding,
+        total_current=total_current,
+        method=method,
+    )
+
+    results = run_magnetostatic_inductance(mas_file, output_path, config)
+
+    # Build MAS outputs
     with open(mas_file) as f:
-        data = json.load(f)
-    
-    magnetic_data = data.get('magnetic', {})
-    
-    # Step 1: Build geometry
-    print("Building geometry with MVB...")
-    step_file, stl_file = build_geometry_from_mas(
-        magnetic_data,
-        output_path,
-        project_name="magnetic",
-        max_turns_per_winding=max_turns_per_winding
-    )
-    
-    # Step 2: Create mesh
-    print("Creating mesh with gmsh...")
-    mesh_dir, body_numbers = create_elmer_mesh(
-        step_file,
-        output_path,
-        mesh_name="mesh"
-    )
-    
-    # Step 3: Generate SIF file
-    print("Generating Elmer SIF file...")
-    sif_path = generate_sif_file(
-        output_path,
-        mesh_dir,
-        body_numbers,
-        core_permeability=core_permeability,
-        current_density=current_density
-    )
-    
-    # Step 4: Run simulation
-    print("Running Elmer simulation...")
-    result = run_elmer_simulation(output_path)
-    
-    # Step 5: Extract results
-    results = {
-        "success": result.success,
-        "electromagnetic_energy": result.electromagnetic_energy,
-        "eddy_current_power": result.eddy_current_power,
-        "geometry_file": step_file,
-        "mesh_dir": mesh_dir,
-        "sif_file": sif_path,
-    }
-    
-    if result.success and result.vtu_path:
-        print("Extracting results...")
-        vtu_results = extract_results(result.vtu_path)
-        results.update(vtu_results)
-        results["vtu_file"] = result.vtu_path
-    else:
-        results["error"] = result.error_message
-    
+        raw_data = json.load(f)
+    _, operating_points = normalize_mas_data(raw_data)
+
+    mas_outputs = build_mas_outputs(results, operating_points)
+    if mas_outputs:
+        results['mas_outputs'] = mas_outputs.to_dict()
+
     return results
 
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) < 3:
-        print("Usage: python mas_processor.py <mas_file.json> <output_dir>")
-        sys.exit(1)
-    
-    mas_file = sys.argv[1]
-    output_dir = sys.argv[2]
-    
-    results = run_mas_simulation(mas_file, output_dir, max_turns_per_winding=2)
-    print("\nResults:")
-    for k, v in results.items():
-        print(f"  {k}: {v}")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run Elmer FEM simulation from MAS file")
+    parser.add_argument("mas_file", help="Path to MAS JSON file")
+    parser.add_argument("-o", "--output", default=None, help="Output directory")
+    parser.add_argument("-t", "--turns", type=int, default=None, help="Max turns (None=all)")
+    parser.add_argument("-I", "--current", type=float, default=1.0, help="Test current (A)")
+    parser.add_argument("-m", "--method", choices=["tangential", "coilsolver"],
+                        default="coilsolver", help="Current application method")
+
+    args = parser.parse_args()
+
+    if args.output is None:
+        args.output = os.path.join(os.path.dirname(args.mas_file), "../output/elmer")
+
+    results = run_mas_simulation(
+        args.mas_file, args.output,
+        max_turns_per_winding=args.turns,
+        total_current=args.current,
+        method=args.method,
+    )
+
+    print("\n" + "=" * 60)
+    print(json.dumps(results, indent=2, default=str))

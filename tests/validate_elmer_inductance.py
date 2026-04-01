@@ -413,14 +413,19 @@ def create_mesh_with_netgen(
         print(f"  Warning: Netgen Glue() failed ({e}), meshing without conformal interfaces")
     wire_diameter = turns_info[0].cross_section_area ** 0.5 if turns_info else 1.0
     geo_size = max(bb.xmax - bb.xmin, bb.ymax - bb.ymin, bb.zmax - bb.zmin)
+    num_turns_total = len(turns_info)
     coarse_h = max(max_element_size, geo_size / 5)
-    min_h = max(wire_diameter * 0.5, 0.2)
-    grading = 0.5
-    # Cap maxh to avoid meshing failures on thin-wire geometries — Netgen needs
-    # a moderate max/min ratio for reliable volume meshing.
+    # Scale minh with turn count: more turns need coarser minimum to keep
+    # element count under ~300K (CalcFields' ILU factorization limit).
+    if num_turns_total > 20:
+        min_h = max(wire_diameter * 0.5, 0.5)
+    else:
+        min_h = max(wire_diameter * 0.5, 0.2)
+    grading = min(0.5 + num_turns_total * 0.008, 0.9)
     coarse_h = min(coarse_h, 6.0)
 
     mp = MeshingParameters(maxh=coarse_h, minh=min_h, grading=grading)
+    print(f"  Netgen params: maxh={coarse_h:.1f}, minh={min_h:.2f}, grading={grading:.2f} ({num_turns_total} turns)")
 
     ngmesh = geo.GenerateMesh(mp)
     ngmesh.Export(mesh_dir + "/", "Elmer Format")
@@ -1118,26 +1123,42 @@ def create_mesh_with_turns(
                 for s in surfs:
                     turn_surface_tags.add(s[1])
 
-        # Mesh settings — scale max element size based on geometry span
-        # to avoid excessively large meshes on big cores
+        # Mesh settings — scale with geometry span and turn count.
+        # More turns → coarser mesh to keep total element count manageable.
+        # Target: ~100K-300K elements regardless of turn count.
         geo_span = max(x_max - x_min, y_max - y_min, z_max - z_min)
-        actual_max_size = max(max_element_size, geo_span / 10.0)
+        num_turns_total = len(turns_info)
+        if num_turns_total > 20:
+            actual_max_size = max(max_element_size, geo_span / 5.0)
+        else:
+            actual_max_size = max(max_element_size, geo_span / 10.0)
         actual_min_size = min_element_size
         if core_type == "toroidal" and turns_info:
             actual_max_size = max(2.0, geo_span / 10.0)
             actual_min_size = 0.2
             print(f"  Using toroidal mesh sizes: max={actual_max_size:.2f}mm, min={actual_min_size:.2f}mm")
 
-        # Refine mesh near turn surfaces. Use wire_diameter / 4 to resolve
-        # the circular cross-section properly.
-        fine_size = wire_diameter / 4.0
-        # For toroidal, use gentler refinement — the pipe sweep B-spline
-        # surfaces cause "overlapping facets" with aggressive distance fields.
+        # Mesh refinement near turns. Scale with turn count:
+        # Few turns (1-6): fine (wire_diam/4) for accurate cross-section
+        # Many turns (>10): coarser (wire_diam/2 to wire_diam) since CoilSolver
+        # handles current topology regardless of mesh density.
+        num_turns_total = len(turns_info)
+        if num_turns_total <= 6:
+            fine_size = wire_diameter / 4.0
+        elif num_turns_total <= 20:
+            fine_size = wire_diameter / 2.0
+        else:
+            fine_size = wire_diameter  # 1 element across wire diameter
+        # For toroidal, use gentler refinement — pipe sweep B-spline surfaces
+        # cause "overlapping facets" with aggressive distance fields.
         if core_type == "toroidal":
             fine_size = max(fine_size, wire_diameter / 2.0, 0.2)
 
+        # For few turns, use distance field for local refinement near turn surfaces.
+        # For many turns (>20), skip the distance field — the per-surface overhead
+        # makes gmsh slow, and gmsh's curvature-based sizing is sufficient.
         turn_surface_tags_list = list(turn_surface_tags) if turn_surface_tags else []
-        if turn_surface_tags_list:
+        if turn_surface_tags_list and num_turns_total <= 20:
             dist_field = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist_field, "SurfacesList", turn_surface_tags_list)
 
@@ -1153,6 +1174,8 @@ def create_mesh_with_turns(
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
             print(f"  Turn mesh refinement: fine_size={fine_size:.3f}mm (wire_diam={wire_diameter:.3f}mm)")
+        else:
+            print(f"  Using curvature-based sizing (no distance field, {num_turns_total} turns)")
 
         gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", max(fine_size * 0.5, 0.1))
@@ -1189,9 +1212,9 @@ def create_mesh_with_turns(
                     gmsh.model.mesh.clear()
                 gmsh.option.setNumber("Mesh.Algorithm3D", algo3d)
                 if coarse_factor > 1:
-                    if turn_surface_tags:
+                    if turn_surface_tags_list and num_turns_total <= 20:
                         gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", fine_size * coarse_factor)
-                    gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size * coarse_factor)
+                    gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size * coarse_factor)
                 gmsh.model.mesh.generate(3)
                 et, tags_check, _ = gmsh.model.mesh.getElements(3)
                 n = sum(len(t) for t in tags_check) if tags_check else 0
@@ -1400,20 +1423,35 @@ def generate_sif_with_coil_solver(
             "",
         ])
     
-    # Equations
-    sif_lines.extend([
-        "! Equations",
-        "Equation 1",
-        '  Name = "MagnetoDynamics for air/core"',
-        "  Active Solvers(2) = 2 3",
-        "End",
-        "",
-        "Equation 2",
-        '  Name = "MagnetoDynamics with CoilSolver"',
-        "  Active Solvers(3) = 1 2 3",
-        "End",
-        "",
-    ])
+    # Equations — for large meshes (>20 turns), skip VTU output (solver 4)
+    if num_turns <= 20:
+        sif_lines.extend([
+            "! Equations",
+            "Equation 1",
+            '  Name = "MagnetoDynamics for air/core"',
+            "  Active Solvers(2) = 2 3",
+            "End",
+            "",
+            "Equation 2",
+            '  Name = "MagnetoDynamics with CoilSolver"',
+            "  Active Solvers(3) = 1 2 3",
+            "End",
+            "",
+        ])
+    else:
+        sif_lines.extend([
+            "! Equations (large mesh: no VTU output)",
+            "Equation 1",
+            '  Name = "MagnetoDynamics for air/core"',
+            "  Active Solvers(2) = 2 3",
+            "End",
+            "",
+            "Equation 2",
+            '  Name = "MagnetoDynamics with CoilSolver"',
+            "  Active Solvers(3) = 1 2 3",
+            "End",
+            "",
+        ])
     
     # Solvers - based on mgdyn_steady_coils test case
     sif_lines.extend([
@@ -1447,44 +1485,75 @@ def generate_sif_with_coil_solver(
         "  Use Elemental CoilCurrent = Logical True",
         "  Fix Input Current Density = Logical True",
         "",
-        "  Linear System Solver = Direct",
-        "  Linear System Direct Method = UMFPack",
+    ])
+
+    # Use iterative solver for large problems (>20 turns ≈ >200K elements)
+    if num_turns > 20:
+        sif_lines.extend([
+            "  Linear System Solver = Iterative",
+            "  Linear System Iterative Method = BiCGStabl",
+            "  BiCGstabl polynomial degree = 4",
+            "  Linear System Preconditioning = ILU2",
+            "  Linear System Max Iterations = 3000",
+            "  Linear System Convergence Tolerance = 1.0e-7",
+            "  Linear System Residual Output = 50",
+            "  Linear System Abort Not Converged = False",
+        ])
+    else:
+        sif_lines.extend([
+            "  Linear System Solver = Direct",
+            "  Linear System Direct Method = UMFPack",
+        ])
+
+    sif_lines.extend([
         "",
         "  Nonlinear System Max Iterations = 1",
         "End",
         "",
-        "Solver 3",
-        "  Equation = MGDynamicsCalc",
-        '  Procedure = "MagnetoDynamics" "MagnetoDynamicsCalcFields"',
-        "",
-        '  Potential Variable = "AV"',
-        "  Calculate Magnetic Field Strength = True",
-        "  Calculate Magnetic Flux Density = True",
-        "  Calculate Current Density = True",
-        "  Calculate Nodal Fields = False",
-        "  Calculate Elemental Fields = True",
-        "",
-        "  Linear System Solver = Iterative",
-        "  Linear System Iterative Method = CG",
-        "  Linear System Preconditioning = ILU0",
-        "  Linear System Max Iterations = 5000",
-        "  Linear System Convergence Tolerance = 1.0e-8",
-        "",
-        "  Nonlinear System Consistent Norm = True",
-        "  Discontinuous Bodies = True",
-        "End",
-        "",
-        "Solver 4",
-        "  Exec Solver = After All",
-        "  Equation = ResultOutput",
-        '  Procedure = "ResultOutputSolve" "ResultOutputSolver"',
-        "",
-        '  Output File Name = "results"',
-        "  Vtu Format = True",
-        "  Save Geometry Ids = True",
-        "  Discontinuous Bodies = True",
-        "End",
-        "",
+    ])
+
+    # CalcFields is always needed (computes ElectroMagnetic Field Energy).
+    # For large meshes, skip VTU output to save memory.
+    if True:
+        sif_lines.extend([
+            "Solver 3",
+            "  Equation = MGDynamicsCalc",
+            '  Procedure = "MagnetoDynamics" "MagnetoDynamicsCalcFields"',
+            "",
+            '  Potential Variable = "AV"',
+            "  Calculate Magnetic Field Strength = True",
+            "  Calculate Magnetic Flux Density = True",
+            "  Calculate Current Density = True",
+            "  Calculate Nodal Fields = False",
+            "  Calculate Elemental Fields = True",
+            "",
+            "  Linear System Solver = Iterative",
+            "  Linear System Iterative Method = CG",
+            "  Linear System Preconditioning = Diagonal",
+            "  Linear System Max Iterations = 5000",
+            "  Linear System Convergence Tolerance = 1.0e-5",
+            "  Linear System Abort Not Converged = False",
+            "End",
+            "",
+        ])
+
+    # VTU output — skip for large meshes to avoid memory issues
+    if num_turns <= 20:
+        sif_lines.extend([
+            "Solver 4",
+            "  Exec Solver = After All",
+            "  Equation = ResultOutput",
+            '  Procedure = "ResultOutputSolve" "ResultOutputSolver"',
+            "",
+            '  Output File Name = "results"',
+            "  Vtu Format = True",
+            "  Save Geometry Ids = True",
+            "  Discontinuous Bodies = True",
+            "End",
+            "",
+        ])
+
+    sif_lines.extend([
         "! Boundary condition - magnetic vector potential and jfix zero at boundary",
         "! Note: ElmerGrid renumbers physical group 100 to boundary 1",
         "Boundary Condition 1",
