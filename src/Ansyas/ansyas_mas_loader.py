@@ -23,10 +23,16 @@ def main(args: Namespace) -> None:
     operating_point_index = args.operating_point_index
     output_folder = args.output
     project_name = args.project_name
+    aedt_version = args.aedt_version
+    non_graphical = args.ng
+    new_desktop_session = args.new_desktop
+    simulate = args.run_simulation
 
-    non_graphical = False
-    new_desktop_session = False
-    ansyas = Ansyas(number_segments_arcs=12, initial_mesh_configuration=2, maximum_error_percent=5, refinement_percent=5, scale=1)
+    ansyas = Ansyas(number_segments_arcs=args.number_segments_arcs,
+                    initial_mesh_configuration=args.initial_mesh_configuration,
+                    maximum_error_percent=args.maximum_error_percent,
+                    refinement_percent=args.refinement_percent,
+                    scale=args.scale,)
 
     f = mas_path.open("r")
     mas_dict = json.load(f)
@@ -52,7 +58,7 @@ def main(args: Namespace) -> None:
     project = ansyas.create_project(
         outputs_folder=output_folder,
         project_name=project_name,
-        # specified_version="2023.2",
+        specified_version=aedt_version,
         non_graphical=non_graphical,
         solution_type=solution_type,
         new_desktop_session=new_desktop_session
@@ -60,10 +66,10 @@ def main(args: Namespace) -> None:
     ansyas.set_units("meter")
     ansyas.create_magnetic_simulation(
         mas=mas,
-        simulate=False,
+        simulate=simulate,
         operating_point_index=operating_point_index
     )
-    project.release_desktop(close_projects=False, close_desktop=False)
+    project.release_desktop(close_projects=args.close_projects, close_desktop=args.close_desktop)
 
 
 if __name__ == "__main__":
@@ -91,12 +97,82 @@ if __name__ == "__main__":
                         help='Specify AEDT\'s solution type to run. Default is EddyCurrent. '
                              'Options are SteadyState, EddyCurrent, AC Magnetic, Transient, TransientAPhiFormulation.')
 
+    parser.add_argument("--aedt_version",
+                        type=str,
+                        required=False,
+                        default="2025.2",
+                        help='Specify AEDT version number in format <year>.<release>. '
+                             'For example: 2025R1 is 2025.1.')
+
+    parser.add_argument("--ng",
+                        type=bool,
+                        required=False,
+                        default=False,
+                        help='Non-graphical mode.')
+
+    parser.add_argument("--new_desktop",
+                        type=bool,
+                        required=False,
+                        default=False,
+                        help='Initialize a new AEDT instance.')
+
+    parser.add_argument("--number_segments_arcs",
+                        type=int,
+                        required=False,
+                        default=12,
+                        help='Number of segments in curve surfaces.')
+
+
+    parser.add_argument("--initial_mesh_configuration",
+                        type=int,
+                        required=False,
+                        default=2,
+                        help='Mesh Configuration defaults to 2.')
+
+    parser.add_argument("--maximum_error_percent",
+                        type=int,
+                        required=False,
+                        default=5,
+                        help='Maximum error tolerance in percent. Defaults to 5%.')
+
+
+    parser.add_argument("--refinement_percent",
+                        type=int,
+                        required=False,
+                        default=5,
+                        help='Energy based mesh refinement. Defaults to 5%.')
+
+    parser.add_argument("--scale",
+                        type=int,
+                        required=False,
+                        default=1,
+                        help='Model scale. Defaults to 1.')
+
     parser.add_argument("--operating_point_index",
                         type=int,
                         required=False,
                         default=0,
                         help='Operating point index can be specified from the MAS file.'
                              'Default is 0, which will take the first operating point in the MAS file.')
+
+    parser.add_argument("--run_simulation",
+                        type=bool,
+                        required=False,
+                        default=False,
+                        help='Run simulation after setup.Defaults to False')
+
+
+    parser.add_argument("--close_desktop",
+                        type=bool,
+                        required=False,
+                        default=False,
+                        help='Close AEDT desktop after finishing. Defaults to False.')
+
+    parser.add_argument("--close_projects",
+                        type=bool,
+                        required=False,
+                        default=False,
+                        help='Close AEDT project after finishing. Defaults to False.')
 
     parser.add_argument("--output",
                         type=Path,
