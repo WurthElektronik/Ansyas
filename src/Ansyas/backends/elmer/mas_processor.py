@@ -54,6 +54,7 @@ from validate_elmer_inductance import (
     calculate_analytical_inductance,
     build_geometry,
     create_mesh_with_turns,
+    create_mesh_with_winding_regions,
     create_mesh_with_netgen,
     generate_sif_with_coil_solver,
     generate_sif_with_tangential_current,
@@ -288,13 +289,24 @@ def run_magnetostatic_inductance(
                     'column_shape': cs,
                 }
 
-    # Try gmsh in subprocess (segfault-safe)
-    def _gmsh_worker(step, outdir, turns_pkl, bobbin_pkl, ctype, result_file):
+    # For many turns (>20), use winding-region approach (annular cylinders)
+    # instead of individual pipe-sweep turns. This avoids gmsh fragment failures
+    # and Netgen CalcFields crashes with many discontinuous bodies.
+    use_winding_regions = num_sim_turns > 20 and core_type == "concentric"
+    if use_winding_regions:
+        print(f"  Using winding-region approach ({num_sim_turns} turns > 20)")
+        config.method = "tangential"  # CoilSolver needs per-turn bodies
+
+    # Mesh in subprocess (segfault-safe for both gmsh and Netgen)
+    def _mesh_worker(step, outdir, turns_pkl, bobbin_pkl, ctype, use_regions, result_file):
         turns = _pickle.loads(turns_pkl)
         bobbin = _pickle.loads(bobbin_pkl) if bobbin_pkl else None
         try:
-            r = create_mesh_with_turns(step, outdir, turns,
-                                       bobbin_params=bobbin, core_type=ctype)
+            if use_regions:
+                r = create_mesh_with_winding_regions(step, outdir, turns, core_type=ctype)
+            else:
+                r = create_mesh_with_turns(step, outdir, turns,
+                                           bobbin_params=bobbin, core_type=ctype)
             with open(result_file, 'wb') as f:
                 _pickle.dump(r, f)
         except Exception as e:
@@ -303,29 +315,29 @@ def run_magnetostatic_inductance(
 
     try:
         result_file = os.path.join(output_path, "_mesh_result.pkl")
-        p = _mp.Process(target=_gmsh_worker, args=(
+        p = _mp.Process(target=_mesh_worker, args=(
             step_file, output_path,
             _pickle.dumps(primary_turns),
             _pickle.dumps(bobbin_params) if bobbin_params else None,
-            core_type, result_file,
+            core_type, use_winding_regions, result_file,
         ))
         p.start()
         p.join(timeout=config.timeout)
         if p.is_alive():
             p.kill()
             p.join()
-            raise RuntimeError("gmsh timed out")
+            raise RuntimeError("meshing timed out")
         if p.exitcode != 0:
-            raise RuntimeError(f"gmsh crashed (exit {p.exitcode})")
+            raise RuntimeError(f"meshing crashed (exit {p.exitcode})")
         with open(result_file, 'rb') as f:
             mesh_result = _pickle.load(f)
         os.remove(result_file)
         if isinstance(mesh_result, Exception):
             raise mesh_result
         mesh_dir, body_numbers, turn_bodies = mesh_result
-        print(f"Mesh (gmsh): {mesh_dir}, {len(turn_bodies)} turn bodies")
+        print(f"Mesh: {mesh_dir}, {len(turn_bodies)} turn/region bodies")
     except Exception as e:
-        print(f"gmsh failed: {e}, trying Netgen...")
+        print(f"Primary meshing failed: {e}, trying Netgen...")
 
         # Netgen in subprocess (OCC state isolation)
         def _netgen_worker(step, outdir, turns_pkl, ctype, result_file):

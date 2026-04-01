@@ -621,6 +621,280 @@ def create_mesh_with_netgen(
     return mesh_dir, body_numbers, turn_bodies
 
 
+def create_mesh_with_winding_regions(
+    step_file: str,
+    output_path: str,
+    turns_info: List[TurnInfo],
+    air_padding: float = 10.0,
+    max_element_size: float = 3.0,
+    core_type: str = "concentric",
+) -> Tuple[str, Dict[str, int], Dict[int, TurnInfo]]:
+    """
+    Create mesh using annular winding regions instead of individual turns.
+
+    For magnetics with many turns (>20), meshing individual pipe-sweep turn
+    volumes is impractical (gmsh fragment fails, Netgen produces too many
+    elements). Instead, this function:
+    1. Imports only core pieces from the STEP file
+    2. Creates annular cylinder regions per winding layer
+    3. Fragments core + winding regions + air box (few volumes, fast)
+    4. Applies tangential current J = N*I/A_region per winding body
+
+    The winding region approach is the standard "stranded conductor" model
+    used by commercial FEM tools. It gives correct inductance since the
+    total ampere-turns (N*I) is preserved.
+
+    Returns same interface as create_mesh_with_turns.
+    """
+    if not HAS_GMSH:
+        raise ImportError("gmsh required")
+
+    import cadquery as cq
+
+    compound = cq.importers.importStep(step_file)
+    solids = sorted(compound.solids().vals(), key=lambda s: -s.Volume())
+    bb = compound.val().BoundingBox()
+
+    # Classify solids: core pieces are large (>500mm³), turns are small.
+    # Use a fixed threshold based on the gap between turn and core volumes.
+    core_solids = []
+    turn_solids = []
+    all_vols = sorted([s.Volume() for s in solids], reverse=True)
+    # Find the gap: largest volume jump between adjacent sorted volumes
+    core_threshold = 500  # default
+    for i in range(len(all_vols) - 1):
+        if all_vols[i] > 10 * all_vols[i + 1] and all_vols[i] > 100:
+            core_threshold = (all_vols[i] + all_vols[i + 1]) / 2
+            break
+    for s in solids:
+        vol = s.Volume()
+        if vol > core_threshold:
+            core_solids.append(s)
+        elif vol > 0.1:
+            turn_solids.append(s)
+
+    # Group ALL turn solids by radius layer. Each layer becomes one
+    # winding region body. The tangential current density is set based on
+    # the number of requested turns (turns_info) matched to each layer.
+    layers = {}
+    for s in turn_solids:
+        sbb = s.BoundingBox()
+        if core_type == "concentric":
+            r = math.sqrt(sbb.xmin**2 + sbb.zmin**2)
+        else:
+            r = math.sqrt(sbb.xmin**2 + sbb.ymin**2)
+        key = round(r * 2) / 2
+        if key not in layers:
+            layers[key] = []
+        layers[key].append(s)
+
+    # Group turns_info by winding name
+    winding_turns = {}
+    for t in turns_info:
+        if t.winding not in winding_turns:
+            winding_turns[t.winding] = []
+        winding_turns[t.winding].append(t)
+
+    print(f"  Winding regions: {len(layers)} layers from {len(turn_solids)} turn solids")
+
+    # Build gmsh model: core + winding cylinders + air
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.model.add("winding_regions")
+
+    try:
+        # Import core pieces only
+        from cadquery import exporters
+        core_step = os.path.join(output_path, "core_only.step")
+        if core_solids:
+            core_compound = cq.Compound.makeCompound(core_solids)
+            exporters.export(cq.Workplane("XY").add(core_compound), core_step, "STEP")
+            gmsh.model.occ.importShapes(core_step)
+            gmsh.model.occ.synchronize()
+
+        # Create annular winding region for each layer
+        winding_tags = []
+        winding_layer_info = []  # (tag, n_turns, mean_radius, wire_area, winding_name)
+        for r_key, layer_solids in sorted(layers.items()):
+            bbs = [s.BoundingBox() for s in layer_solids]
+            if core_type == "concentric":
+                r_inner = min(math.sqrt(b.xmin**2 + b.zmin**2) for b in bbs) - 0.1
+                r_outer = max(math.sqrt(b.xmax**2 + b.zmax**2) for b in bbs) + 0.1
+                y_min = min(b.ymin for b in bbs) - 0.1
+                y_max = max(b.ymax for b in bbs) + 0.1
+                # Cylinder along Y axis
+                outer = gmsh.model.occ.addCylinder(0, y_min, 0, 0, y_max - y_min, 0, r_outer)
+                inner = gmsh.model.occ.addCylinder(0, y_min, 0, 0, y_max - y_min, 0, r_inner)
+            else:
+                # Toroidal: cylinder along Z
+                r_inner = min(math.sqrt(b.xmin**2 + b.ymin**2) for b in bbs) - 0.1
+                r_outer = max(math.sqrt(b.xmax**2 + b.ymax**2) for b in bbs) + 0.1
+                z_min = min(b.zmin for b in bbs) - 0.1
+                z_max = max(b.zmax for b in bbs) + 0.1
+                outer = gmsh.model.occ.addCylinder(0, 0, z_min, 0, 0, z_max - z_min, r_outer)
+                inner = gmsh.model.occ.addCylinder(0, 0, z_min, 0, 0, z_max - z_min, r_inner)
+
+            gmsh.model.occ.cut([(3, outer)], [(3, inner)])
+            gmsh.model.occ.synchronize()
+
+            mean_r = (r_inner + r_outer) / 2
+            # Region cross-section area = radial_width * axial_height (mm²)
+            if core_type == "concentric":
+                region_area = (r_outer - r_inner) * (y_max - y_min)
+            else:
+                region_area = (r_outer - r_inner) * (z_max - z_min)
+            winding_layer_info.append({
+                'n_turns': 0,  # Will be filled by assignment below
+                'mean_radius': mean_r,
+                'region_area_mm2': region_area,
+                'winding': turns_info[0].winding if turns_info else 'Primary',
+            })
+
+        # Assign turns to layers by distributing evenly among layers whose
+        # geometry could contain them. Since MAS and STEP radii don't match
+        # directly, use the number of solids per layer as the turn distribution.
+        n_requested = len(turns_info)
+        n_total_solids = sum(len(layers[k]) for k in sorted(layers.keys()))
+        if winding_layer_info and n_requested > 0:
+            # Distribute proportionally to layer solid count
+            assigned = 0
+            for i, (r_key, layer_solids) in enumerate(sorted(layers.items())):
+                if i < len(winding_layer_info):
+                    # Proportion of total turns for this layer
+                    proportion = len(layer_solids) / n_total_solids
+                    n_for_layer = round(n_requested * proportion)
+                    # Clamp: don't assign more than the layer's solid count
+                    n_for_layer = min(n_for_layer, len(layer_solids))
+                    n_for_layer = min(n_for_layer, n_requested - assigned)
+                    winding_layer_info[i]['n_turns'] = n_for_layer
+                    assigned += n_for_layer
+            # Distribute remainder
+            for i in range(len(winding_layer_info)):
+                if assigned >= n_requested:
+                    break
+                if winding_layer_info[i]['n_turns'] == 0:
+                    continue
+                deficit = n_requested - assigned
+                winding_layer_info[i]['n_turns'] += deficit
+                assigned += deficit
+
+            for wl in winding_layer_info:
+                print(f"    Layer r={wl['mean_radius']:.1f}mm: {wl['n_turns']} turns ({wl['winding']})")
+
+        # Add air box
+        xmin = bb.xmin - air_padding
+        ymin = bb.ymin - air_padding
+        zmin = bb.zmin - air_padding
+        air = gmsh.model.occ.addBox(
+            xmin, ymin, zmin,
+            (bb.xmax - bb.xmin) + 2 * air_padding,
+            (bb.ymax - bb.ymin) + 2 * air_padding,
+            (bb.zmax - bb.zmin) + 2 * air_padding,
+        )
+        gmsh.model.occ.synchronize()
+
+        # Fragment all volumes
+        all_solid = [(3, t) for _, t in gmsh.model.getEntities(3) if t != air]
+        gmsh.model.occ.fragment([(3, air)], all_solid)
+        gmsh.model.occ.synchronize()
+
+        # Classify volumes after fragment
+        new_vols = gmsh.model.getEntities(3)
+        core_pg, wind_pg, air_pg = [], [], []
+        for dim, tag in new_vols:
+            mass = gmsh.model.occ.getMass(dim, tag)
+            bx = gmsh.model.getBoundingBox(dim, tag)
+            bv = (bx[3] - bx[0]) * (bx[4] - bx[1]) * (bx[5] - bx[2])
+            if bv > 50000:
+                air_pg.append(tag)
+            elif mass > core_threshold:
+                core_pg.append(tag)
+            else:
+                wind_pg.append(tag)
+
+        # Create physical groups
+        body_numbers = {}
+        turn_bodies_out = {}
+
+        next_tag = 1
+        if core_pg:
+            gmsh.model.addPhysicalGroup(3, core_pg, tag=next_tag, name="core")
+            body_numbers["core"] = next_tag
+            next_tag += 1
+
+        # Each winding layer gets its own physical group (sequential tags)
+        for i, winfo in enumerate(winding_layer_info):
+            if i < len(wind_pg):
+                gmsh.model.addPhysicalGroup(3, [wind_pg[i]], tag=next_tag,
+                                             name=f"winding_{winfo['winding']}_{i}")
+                # For winding regions, cross_section_area is the REGION area,
+                # and _n_turns_in_region stores the turn count. J = N*I/A_region.
+                region_ti = TurnInfo(
+                    name=f"winding_region_{winfo['winding']}_{i}",
+                    radius=winfo['mean_radius'],
+                    z_position=0,
+                    cross_section_area=winfo['region_area_mm2'],  # Region area, not wire
+                    orientation='clockwise',
+                    winding=winfo['winding'],
+                )
+                region_ti._n_turns_in_region = winfo['n_turns']
+                body_numbers[region_ti.name] = next_tag
+                turn_bodies_out[next_tag] = region_ti
+                next_tag += 1
+
+        # Remaining winding volumes as air
+        for j in range(len(winding_layer_info), len(wind_pg)):
+            air_pg.append(wind_pg[j])
+
+        if air_pg:
+            gmsh.model.addPhysicalGroup(3, air_pg, tag=next_tag, name="air")
+            body_numbers["air"] = next_tag
+            next_tag += 1
+
+        # Outer boundary
+        outer_surfs = []
+        tol = 0.5
+        for _, tag in gmsh.model.getEntities(2):
+            sb = gmsh.model.getBoundingBox(2, tag)
+            for j, v in [(0, xmin), (3, bb.xmax + air_padding),
+                         (1, ymin), (4, bb.ymax + air_padding),
+                         (2, zmin), (5, bb.zmax + air_padding)]:
+                if abs(sb[j] - v) < tol:
+                    outer_surfs.append(tag)
+                    break
+        if outer_surfs:
+            gmsh.model.addPhysicalGroup(2, list(set(outer_surfs)), tag=100, name="outer_boundary")
+
+        # Mesh
+        gmsh.option.setNumber("Mesh.MeshSizeMax", max_element_size)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.3)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+        gmsh.option.setNumber("Mesh.Optimize", 1)
+        gmsh.model.mesh.generate(3)
+
+        et, tags, _ = gmsh.model.mesh.getElements(3)
+        total_3d = sum(len(t) for t in tags) if tags else 0
+        print(f"  Winding region mesh: {total_3d} elements, {len(new_vols)} volumes")
+
+        gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        msh_path = os.path.join(output_path, "mesh.msh")
+        gmsh.write(msh_path)
+
+    finally:
+        gmsh.finalize()
+
+    # Convert to Elmer
+    mesh_dir = os.path.join(output_path, "mesh")
+    cmd = ["ElmerGrid", "14", "2", "mesh.msh", "-autoclean",
+           "-scale", "0.001", "0.001", "0.001"]
+    subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
+
+    if not os.path.exists(mesh_dir):
+        raise RuntimeError("ElmerGrid failed")
+
+    return mesh_dir, body_numbers, turn_bodies_out
+
+
 def create_mesh_with_turns(
     step_file: str,
     output_path: str,
@@ -1689,7 +1963,10 @@ def generate_sif_with_tangential_current(
             z0_m = turn_info.z_position * 1e-3  # m (height along Y axis)
         
         J_mag = total_current / A_m2  # A/m^2
-        
+        # For winding regions (merged turns), multiply by number of turns in region
+        n_region = getattr(turn_info, '_n_turns_in_region', 1)
+        J_mag *= n_region
+
         # Clockwise or counterclockwise (when viewed from outside the torus)
         sign = 1.0 if turn_info.orientation == 'clockwise' else -1.0
         
