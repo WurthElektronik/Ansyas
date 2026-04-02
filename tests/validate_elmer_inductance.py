@@ -1865,6 +1865,7 @@ def generate_sif_with_tangential_current(
     total_current: float = 1.0,  # Total current through winding (A)
     core_type: str = "concentric",
     use_iterative_solver: bool = False,
+    active_windings: Optional[List[str]] = None,
 ) -> str:
     """
     Generate SIF file with proper tangential current for each turn.
@@ -1971,6 +1972,11 @@ def generate_sif_with_tangential_current(
         # For winding regions (merged turns), multiply by number of turns in region
         n_region = getattr(turn_info, '_n_turns_in_region', 1)
         J_mag *= n_region
+
+        # Zero current for inactive windings
+        if active_windings is not None:
+            if not any(aw.lower() in turn_info.winding.lower() for aw in active_windings):
+                J_mag = 0.0
 
         # Clockwise or counterclockwise (when viewed from outside the torus)
         sign = 1.0 if turn_info.orientation == 'clockwise' else -1.0
@@ -2698,11 +2704,10 @@ def compute_inductance_matrix(
         if not os.path.exists(mesh_link):
             os.symlink(os.path.abspath(mesh_dir), mesh_link)
 
-        sif_path = generate_sif_with_coil_solver(
+        sif_path = generate_sif_with_tangential_current(
             sim_dir, body_numbers, turn_bodies,
             core_permeability=core_permeability,
             total_current=total_current,
-            num_turns=num_turns,
             core_type=core_type,
             active_windings=[wname],
         )
@@ -2724,11 +2729,10 @@ def compute_inductance_matrix(
             if not os.path.exists(mesh_link):
                 os.symlink(os.path.abspath(mesh_dir), mesh_link)
 
-            sif_path = generate_sif_with_coil_solver(
+            sif_path = generate_sif_with_tangential_current(
                 sim_dir, body_numbers, turn_bodies,
                 core_permeability=core_permeability,
                 total_current=total_current,
-                num_turns=num_turns,
                 core_type=core_type,
                 active_windings=[wi, wj],
             )
