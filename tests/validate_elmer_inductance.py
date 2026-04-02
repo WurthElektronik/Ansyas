@@ -188,6 +188,57 @@ def extract_turns_info(magnetic_data: Dict, core_type: str = "concentric") -> Li
     return turns
 
 
+def get_bh_curve(material_name: str, temperature: float = 25.0,
+                  n_points: int = 20) -> List[Tuple[float, float]]:
+    """
+    Generate H-B curve points for a ferrite material.
+
+    Synthesizes from initial permeability + saturation point using a
+    Langevin-like model: B(H) = B_sat * tanh(mu_0 * mu_i * H / B_sat)
+
+    Returns list of (H_A_per_m, B_Tesla) tuples sorted by H.
+    """
+    mu_0 = 4e-7 * math.pi
+    mu_i = get_material_permeability(material_name, temperature)
+
+    # Get saturation from PyOM
+    B_sat = 0.4  # default
+    H_sat = 1200.0
+    if HAS_PYMKF:
+        try:
+            mat_data = PyOM.get_material_data(material_name)
+            if isinstance(mat_data, str):
+                mat_data = json.loads(mat_data)
+            sat_points = mat_data.get('saturation', [])
+            best_diff = float('inf')
+            for p in sat_points:
+                diff = abs(p.get('temperature', 25) - temperature)
+                if diff < best_diff:
+                    best_diff = diff
+                    B_sat = p.get('magneticFluxDensity', 0.4)
+                    H_sat = p.get('magneticField', 1200.0)
+        except Exception:
+            pass
+
+    # Langevin-like curve: B = B_sat * tanh(mu_0 * mu_i * H / B_sat)
+    # At low H: B ≈ mu_0 * mu_i * H (linear, matches initial permeability)
+    # At high H: B → B_sat (saturates)
+    # Past saturation, add mu_0*H slope to keep B strictly increasing.
+    points = [(0.0, 0.0)]
+    H_max = H_sat * 5
+    prev_B = 0.0
+    for i in range(1, n_points):
+        H = H_max * (i / (n_points - 1)) ** 1.5  # denser at low H
+        B = B_sat * math.tanh(mu_0 * mu_i * H / B_sat) + mu_0 * H
+        # Ensure strictly increasing
+        if B <= prev_B:
+            B = prev_B + 1e-6
+        points.append((H, B))
+        prev_B = B
+
+    return points
+
+
 def get_material_permeability(material_name: str, temperature: float = 25.0) -> float:
     """
     Get initial permeability for a ferrite material at given temperature.
@@ -308,7 +359,8 @@ def calculate_analytical_inductance(core_data: Dict, num_turns: int) -> Optional
 
 
 def build_geometry(magnetic_data: Dict, output_path: str,
-                   max_turns: Optional[int] = None, include_bobbin: bool = True) -> Tuple[str, str]:
+                   max_turns: Optional[int] = None, include_bobbin: bool = True,
+                   all_windings: bool = False) -> Tuple[str, str]:
     """Build 3D geometry using MVB."""
     if not HAS_MVB:
         raise ImportError("MVB required")
@@ -319,7 +371,7 @@ def build_geometry(magnetic_data: Dict, output_path: str,
     core = get_core_data(magnetic_data)
     magnetic_data = {**magnetic_data, 'core': core}
     
-    # Optionally limit turns per winding
+    # Optionally limit turns
     if max_turns is not None:
         coil = magnetic_data.get('coil', {}).copy()
         turns = coil.get('turnsDescription', [])
@@ -331,9 +383,17 @@ def build_geometry(magnetic_data: Dict, output_path: str,
                 if w not in winding_groups:
                     winding_groups[w] = []
                 winding_groups[w].append(t)
-            limited = []
-            for w, wturns in winding_groups.items():
-                limited.extend(wturns[:max_turns])
+            if all_windings:
+                # Include max_turns from EACH winding (for inductance matrix)
+                limited = []
+                for w, wturns in winding_groups.items():
+                    limited.extend(wturns[:max_turns])
+            else:
+                # Include max_turns from PRIMARY only (for single inductance)
+                primary_turns = winding_groups.get('Primary', [])
+                if not primary_turns:
+                    primary_turns = list(winding_groups.values())[0] if winding_groups else []
+                limited = primary_turns[:max_turns]
             coil['turnsDescription'] = limited
             magnetic_data = {**magnetic_data, 'coil': coil}
     
@@ -1866,6 +1926,7 @@ def generate_sif_with_tangential_current(
     core_type: str = "concentric",
     use_iterative_solver: bool = False,
     active_windings: Optional[List[str]] = None,
+    bh_curve: Optional[List[Tuple[float, float]]] = None,
 ) -> str:
     """
     Generate SIF file with proper tangential current for each turn.
@@ -1912,7 +1973,17 @@ def generate_sif_with_tangential_current(
         "! Materials",
         "Material 1",
         '  Name = "Ferrite"',
-        f"  Relative Permeability = {core_permeability}",
+    ]
+
+    if bh_curve and len(bh_curve) >= 3:
+        n = len(bh_curve)
+        sif_lines.append(f"  H-B Curve({n},2) = Real")
+        for H, B in bh_curve:
+            sif_lines.append(f"    {H:.4f} {B:.6f}")
+    else:
+        sif_lines.append(f"  Relative Permeability = {core_permeability}")
+
+    sif_lines.extend([
         "  Electric Conductivity = 0.0",
         "End",
         "",
@@ -1928,8 +1999,8 @@ def generate_sif_with_tangential_current(
         "  Electric Conductivity = 0.0",
         "End",
         "",
-    ]
-    
+    ])
+
     # Generate body forces for each turn
     body_force_id = 1
     body_force_map = {}  # body_id -> body_force_id
@@ -2114,6 +2185,17 @@ def generate_sif_with_tangential_current(
         sif_lines.extend([
             "  Linear System Solver = Direct",
             "  Linear System Direct Method = UMFPACK",
+        ])
+
+    # Nonlinear iterations for BH curve
+    if bh_curve and len(bh_curve) >= 3:
+        sif_lines.extend([
+            "",
+            "  Nonlinear System Max Iterations = 15",
+            "  Nonlinear System Convergence Tolerance = 1.0e-6",
+            "  Nonlinear System Newton After Iterations = 3",
+            "  Nonlinear System Newton After Tolerance = 1.0e-3",
+            "  Nonlinear System Relaxation Factor = 0.7",
         ])
 
     sif_lines.extend([
@@ -2664,7 +2746,7 @@ def compute_inductance_matrix(
     # Build geometry ONCE (includes all windings)
     os.makedirs(output_dir, exist_ok=True)
     step_file, core_type_detected = build_geometry(
-        magnetic_data, output_dir, max_turns=max_turns
+        magnetic_data, output_dir, max_turns=max_turns, all_windings=True
     )
 
     # Mesh ONCE
