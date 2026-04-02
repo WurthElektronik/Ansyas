@@ -319,20 +319,22 @@ def build_geometry(magnetic_data: Dict, output_path: str,
     core = get_core_data(magnetic_data)
     magnetic_data = {**magnetic_data, 'core': core}
     
-    # Optionally limit turns
+    # Optionally limit turns per winding
     if max_turns is not None:
         coil = magnetic_data.get('coil', {}).copy()
         turns = coil.get('turnsDescription', [])
         if turns:
-            # Keep only first max_turns from primary winding (fall back to first winding)
-            primary_turns = [t for t in turns if 'primary' in t.get('winding', '').lower()]
-            if not primary_turns:
-                # No primary winding — use turns from the first winding
-                windings = sorted(set(t.get('winding', '') for t in turns))
-                if windings:
-                    first_winding = windings[0]
-                    primary_turns = [t for t in turns if t.get('winding', '') == first_winding]
-            coil['turnsDescription'] = primary_turns[:max_turns]
+            # Group by winding and limit each
+            winding_groups = {}
+            for t in turns:
+                w = t.get('winding', 'Primary')
+                if w not in winding_groups:
+                    winding_groups[w] = []
+                winding_groups[w].append(t)
+            limited = []
+            for w, wturns in winding_groups.items():
+                limited.extend(wturns[:max_turns])
+            coil['turnsDescription'] = limited
             magnetic_data = {**magnetic_data, 'coil': coil}
     
     # Build with MVB
@@ -1548,6 +1550,7 @@ def generate_sif_with_coil_solver(
     total_current: float = 1.0,
     num_turns: int = 1,
     core_type: str = "concentric",
+    active_windings: Optional[List[str]] = None,
 ) -> str:
     """
     Generate SIF file using CoilSolver with Coil Closed = True.
@@ -1624,37 +1627,39 @@ def generate_sif_with_coil_solver(
         "",
     ]
     
-    # Component definition for each turn as a separate coil
-    # This allows CoilSolver to handle each closed loop correctly
+    # Component definition for each turn as a separate coil.
+    # When active_windings is set, only turns belonging to those windings
+    # carry current. Others get J=0 (still needed for CoilSolver topology).
     comp_id = 1
     for body_id in coil_body_ids:
         turn_info = turn_bodies[body_id]
-        
+
+        # Check if this turn's winding is active
+        if active_windings is not None:
+            is_active = any(aw.lower() in turn_info.winding.lower() for aw in active_windings)
+        else:
+            is_active = True
+
+        J_desired = total_current / (turn_info.cross_section_area * 1e-6) if is_active else 0.0
+
         # Calculate Coil Normal based on core type and turn position
         if core_type == "toroidal":
-            # For toroidal: turn position is in XY plane, Z is perpendicular
-            # Coil Normal should point in toroidal direction (tangent to major circumference)
-            x = turn_info.x_position  # x in mm
-            y = turn_info.z_position  # y in mm (stored as z_position but is Y coordinate)
-
-            # Normalize to get unit vector in XY plane
+            x = turn_info.x_position
+            y = turn_info.z_position
             r_actual = math.sqrt(x**2 + y**2) if (x**2 + y**2) > 0 else 1.0
-
-            # Toroidal tangent at (x, y, 0): (-y/r, x/r, 0)
             nx = -y / r_actual
             ny = x / r_actual
             nz = 0.0
             coil_normal = f"  Coil Normal(3) = Real {nx:.6f} {ny:.6f} {nz:.6f}"
         else:
-            # For concentric (PQ, E-core): turns are around Y axis (column axis)
             coil_normal = "  Coil Normal(3) = Real 0.0 1.0 0.0"
-        
+
         sif_lines.extend([
             f"Component {comp_id}",
             f'  Name = String "Coil_{turn_info.name}"',
             '  Coil Type = String "test"',
             f"  Master Bodies(1) = Integer {body_id}",
-            f"  Desired Current Density = Real {total_current / (turn_info.cross_section_area * 1e-6):.1f}",
+            f"  Desired Current Density = Real {J_desired:.1f}",
             coil_normal,
             "End",
             "",
@@ -2585,6 +2590,217 @@ def main():
     print(json.dumps(results, indent=2, default=str))
     
     return 0 if results.get('success') else 1
+
+
+def compute_inductance_matrix(
+    mas_file: str,
+    output_dir: str,
+    max_turns: int = 4,
+    total_current: float = 1.0,
+    core_permeability: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Compute the NxN inductance matrix for a multi-winding magnetic component.
+
+    Uses the energy method:
+    - Self-inductance: Lii = 2*Wi / Ii²  (excite winding i only)
+    - Mutual inductance: Mij = (W_ij - 0.5*Lii*Ii² - 0.5*Ljj*Ij²) / (Ii*Ij)
+
+    Returns dict with:
+        inductance_matrix: NxN matrix (H)
+        coupling_matrix: NxN coupling coefficients
+        leakage_inductance: per-winding leakage (H)
+        winding_names: list of winding names
+        energies: dict of energy per excitation pattern
+    """
+    # Load and prepare (same as validate_mas_file)
+    data = load_mas_file(mas_file)
+    magnetic_data = data.get('magnetic', data)
+    core_type = 'toroidal' if any(
+        k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
+        for k in ['T ', 'T_']
+    ) else 'concentric'
+
+    all_turns = extract_turns_info(magnetic_data, core_type)
+    core_data = get_core_data(magnetic_data)
+
+    # Auto-detect permeability
+    if core_permeability is None:
+        func_desc = core_data.get('functionalDescription', {})
+        mat = func_desc.get('material', 'N87')
+        if isinstance(mat, dict):
+            mat = mat.get('name', 'N87')
+        core_permeability = get_material_permeability(mat)
+
+    # Group turns by winding
+    winding_turns = {}
+    for t in all_turns:
+        if t.winding not in winding_turns:
+            winding_turns[t.winding] = []
+        winding_turns[t.winding].append(t)
+
+    winding_names = list(winding_turns.keys())
+    N = len(winding_names)
+    print(f"Windings: {winding_names} ({N} total)")
+
+    # Limit turns per winding
+    for wname in winding_names:
+        if max_turns and len(winding_turns[wname]) > max_turns:
+            winding_turns[wname] = winding_turns[wname][:max_turns]
+
+    # All turns for geometry (need all windings in the mesh)
+    all_selected = []
+    for wname in winding_names:
+        all_selected.extend(winding_turns[wname])
+    num_turns = len(all_selected)
+    print(f"Total turns for simulation: {num_turns}")
+
+    # Build geometry ONCE (includes all windings)
+    os.makedirs(output_dir, exist_ok=True)
+    step_file, core_type_detected = build_geometry(
+        magnetic_data, output_dir, max_turns=max_turns
+    )
+
+    # Mesh ONCE
+    print("Creating mesh (shared for all excitations)...")
+    mesh_dir, body_numbers, turn_bodies = create_mesh_with_turns(
+        step_file, output_dir, all_selected, core_type=core_type
+    )
+    print(f"Mesh: {mesh_dir}, {len(turn_bodies)} turn bodies")
+
+    # Patch missing bodies helper
+    def patch_sif(sif_path):
+        elements_path = os.path.join(mesh_dir, "mesh.elements")
+        mesh_bodies = set()
+        with open(elements_path) as ef:
+            for line in ef:
+                p = line.strip().split()
+                if len(p) >= 2:
+                    mesh_bodies.add(int(p[1]))
+        max_bid = max(mesh_bodies) if mesh_bodies else 0
+        with open(sif_path) as sf:
+            sif = sf.read()
+        missing = [b for b in range(1, max_bid + 1) if f"Body {b}\n" not in sif]
+        if missing:
+            with open(sif_path, 'a') as sf:
+                for b in missing:
+                    sf.write(f"\nBody {b}\n  Name = \"Air_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
+
+    # Run simulations for each excitation pattern
+    energies = {}
+
+    # Self-inductance: excite each winding separately
+    for i, wname in enumerate(winding_names):
+        sim_dir = os.path.join(output_dir, f"sim_{wname}")
+        os.makedirs(sim_dir, exist_ok=True)
+        # Symlink mesh
+        mesh_link = os.path.join(sim_dir, "mesh")
+        if not os.path.exists(mesh_link):
+            os.symlink(os.path.abspath(mesh_dir), mesh_link)
+
+        sif_path = generate_sif_with_coil_solver(
+            sim_dir, body_numbers, turn_bodies,
+            core_permeability=core_permeability,
+            total_current=total_current,
+            num_turns=num_turns,
+            core_type=core_type,
+            active_windings=[wname],
+        )
+        patch_sif(sif_path)
+
+        print(f"\n--- Sim: excite {wname} only ---")
+        success, energy, output = run_elmer(sim_dir, timeout=600)
+        energies[wname] = energy
+        L_self = calculate_inductance_from_energy(energy, total_current)
+        print(f"  Energy={energy:.4e} J, L_{wname}={L_self*1e6:.2f} uH")
+
+    # Mutual inductance: excite pairs
+    for i in range(N):
+        for j in range(i + 1, N):
+            wi, wj = winding_names[i], winding_names[j]
+            sim_dir = os.path.join(output_dir, f"sim_{wi}_{wj}")
+            os.makedirs(sim_dir, exist_ok=True)
+            mesh_link = os.path.join(sim_dir, "mesh")
+            if not os.path.exists(mesh_link):
+                os.symlink(os.path.abspath(mesh_dir), mesh_link)
+
+            sif_path = generate_sif_with_coil_solver(
+                sim_dir, body_numbers, turn_bodies,
+                core_permeability=core_permeability,
+                total_current=total_current,
+                num_turns=num_turns,
+                core_type=core_type,
+                active_windings=[wi, wj],
+            )
+            patch_sif(sif_path)
+
+            print(f"\n--- Sim: excite {wi} + {wj} ---")
+            success, energy, output = run_elmer(sim_dir, timeout=600)
+            energies[(wi, wj)] = energy
+            print(f"  Energy={energy:.4e} J")
+
+    # Compute inductance matrix
+    I = total_current
+    L_matrix = [[0.0] * N for _ in range(N)]
+
+    # Self-inductance
+    for i, wname in enumerate(winding_names):
+        L_matrix[i][i] = 2 * energies[wname] / I**2
+
+    # Mutual inductance from combined energy
+    for i in range(N):
+        for j in range(i + 1, N):
+            wi, wj = winding_names[i], winding_names[j]
+            W_ij = energies.get((wi, wj), 0)
+            Mij = (W_ij - 0.5 * L_matrix[i][i] * I**2 - 0.5 * L_matrix[j][j] * I**2) / (I * I)
+            L_matrix[i][j] = Mij
+            L_matrix[j][i] = Mij
+
+    # Coupling coefficients
+    k_matrix = [[0.0] * N for _ in range(N)]
+    for i in range(N):
+        for j in range(N):
+            if i == j:
+                k_matrix[i][j] = 1.0
+            elif L_matrix[i][i] > 0 and L_matrix[j][j] > 0:
+                k_matrix[i][j] = L_matrix[i][j] / math.sqrt(L_matrix[i][i] * L_matrix[j][j])
+
+    # Leakage inductance
+    leakage = {}
+    for i, wi in enumerate(winding_names):
+        if N > 1:
+            # L_leak_i = Lii * (1 - k²) for 2-winding case
+            j = 1 - i if N == 2 else 0  # simplification for 2 windings
+            leakage[wi] = L_matrix[i][i] * (1 - k_matrix[i][j]**2)
+        else:
+            leakage[wi] = 0
+
+    # Print results
+    print("\n" + "=" * 60)
+    print("INDUCTANCE MATRIX (uH):")
+    header = "         " + "  ".join(f"{w:>12s}" for w in winding_names)
+    print(header)
+    for i, wi in enumerate(winding_names):
+        row = f"{wi:>8s} " + "  ".join(f"{L_matrix[i][j]*1e6:>12.2f}" for j in range(N))
+        print(row)
+
+    print("\nCOUPLING MATRIX:")
+    print(header)
+    for i, wi in enumerate(winding_names):
+        row = f"{wi:>8s} " + "  ".join(f"{k_matrix[i][j]:>12.4f}" for j in range(N))
+        print(row)
+
+    print("\nLEAKAGE INDUCTANCE (uH):")
+    for wi, Ll in leakage.items():
+        print(f"  {wi}: {Ll*1e6:.2f} uH")
+
+    return {
+        'winding_names': winding_names,
+        'inductance_matrix_H': L_matrix,
+        'coupling_matrix': k_matrix,
+        'leakage_inductance_H': leakage,
+        'energies': {str(k): v for k, v in energies.items()},
+    }
 
 
 if __name__ == "__main__":
