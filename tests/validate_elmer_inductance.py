@@ -2278,8 +2278,9 @@ def run_elmer(sim_dir: str, timeout: int = 600) -> Tuple[bool, float, str]:
         (success, energy, output)
     """
     try:
+        # Use 16MB stack to avoid segfault in tree gauge DFS with many bodies
         result = subprocess.run(
-            ["ElmerSolver"],
+            ["bash", "-c", "ulimit -s 16384 && exec ElmerSolver"],
             cwd=sim_dir,
             capture_output=True,
             text=True,
