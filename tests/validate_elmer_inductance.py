@@ -292,69 +292,75 @@ def get_material_permeability(material_name: str, temperature: float = 25.0) -> 
     return float(default_permeabilities.get(material_name, 2000))
 
 
-def calculate_analytical_inductance(core_data: Dict, num_turns: int) -> Optional[float]:
-    """Calculate analytical inductance using AL value.
-    
-    Uses effective area and length from PyMKF-processed core data.
+def calculate_analytical_inductance(magnetic_data: Dict, num_turns: int) -> Optional[float]:
+    """Calculate analytical inductance using PyMKF reluctance model.
+
+    Uses PyMKF.calculate_inductance_from_number_turns_and_gapping which
+    accounts for core geometry, gapping, and material permeability.
+    Falls back to simple AL formula if PyMKF is unavailable.
     """
+    try:
+        import PyMKF
+        import copy
+
+        mag = magnetic_data if 'core' in magnetic_data else {'core': magnetic_data}
+        mag_auto = PyOM.magnetic_autocomplete(mag, {})
+        if isinstance(mag_auto, str):
+            mag_auto = json.loads(mag_auto)
+
+        core = copy.deepcopy(mag_auto.get('core', {}))
+        coil = copy.deepcopy(mag_auto.get('coil', {}))
+
+        # Override turn count to match FEM simulation
+        for w in coil.get('functionalDescription', []):
+            w['numberTurns'] = num_turns
+
+        # Remove subtractive gaps (FEM geometry doesn't model air gaps yet).
+        # Keep only residual gaps for fair comparison.
+        gapping = core.get('functionalDescription', {}).get('gapping', [])
+        ungapped = [g for g in gapping if g.get('type') != 'subtractive']
+        if not ungapped:
+            # Need at least residual gaps for PyMKF
+            ungapped = [{'type': 'residual', 'length': 1e-5}] * 2
+        core['functionalDescription']['gapping'] = ungapped
+
+        op = {
+            'conditions': {'ambientTemperature': 25},
+            'excitationsPerWinding': [{
+                'frequency': 100000,
+                'current': {'waveform': {'data': [0, 1, 0], 'time': [0, 0.000005, 0.00001]}},
+                'voltage': {'waveform': {'data': [1, -1], 'time': [0, 0.00001]}},
+            }] * len(coil.get('functionalDescription', [{}]))
+        }
+        models = {'gapReluctance': 'ZHANG'}
+
+        L = PyMKF.calculate_inductance_from_number_turns_and_gapping(core, coil, op, models)
+        return float(L)
+
+    except Exception:
+        pass
+
+    # Fallback: simple AL formula (ignores gapping)
+    core_data = magnetic_data.get('core', magnetic_data)
     if not isinstance(core_data, dict):
         return None
-    
-    # Try to find effective parameters - check multiple locations
-    Ae = None  # m^2
-    le = None  # m
-    
-    # 1. Check processedDescription (PyMKF output)
+
     processed = core_data.get('processedDescription', {})
-    if processed:
-        eff = processed.get('effectiveParameters', {})
-        if eff:
-            Ae = eff.get('effectiveArea')  # Already in m^2
-            le = eff.get('effectiveLength')  # Already in m
-    
-    # 2. Check functionalDescription.effectiveParameters
-    if Ae is None or le is None:
-        func_desc = core_data.get('functionalDescription', {})
-        if 'effectiveParameters' in func_desc:
-            eff = func_desc['effectiveParameters']
-            if Ae is None:
-                Ae = eff.get('effectiveArea')
-            if le is None:
-                le = eff.get('effectiveLength')
-    
-    # 3. Fall back to geometrical description (central column area)
-    if Ae is None:
-        geom = core_data.get('geometricalDescription', [{}])
-        if not isinstance(geom, list):
-            geom = [{}]
-        
-        for piece in geom:
-            columns = piece.get('columns', [])
-            for col in columns:
-                if col.get('type') == 'central':
-                    shape = col.get('shape', 'round')
-                    if shape == 'round':
-                        width = col.get('width', 0)  # m
-                        Ae = math.pi * (width/2)**2  # m^2
-                    else:
-                        width = col.get('width', 0)
-                        depth = col.get('depth', width)
-                        Ae = width * depth  # m^2
-    
-    # Get permeability from material data
+    eff = processed.get('effectiveParameters', {}) if processed else {}
+    Ae = eff.get('effectiveArea')
+    le = eff.get('effectiveLength')
+
     func_desc = core_data.get('functionalDescription', {})
     mat = func_desc.get('material', 'N87')
     if isinstance(mat, dict):
         mat = mat.get('name', 'N87')
     mu_r = get_material_permeability(mat)
-    
-    # Calculate AL and inductance
+
     if Ae and le:
-        mu_0 = 4 * math.pi * 1e-7  # H/m
-        AL = mu_0 * mu_r * Ae / le  # H/turn^2
-        L = AL * num_turns**2  # H
-        return L
-    
+        mu_0 = 4 * math.pi * 1e-7
+        AL = mu_0 * mu_r * Ae / le
+        return AL * num_turns**2
+
     return None
 
 
@@ -3535,7 +3541,7 @@ def validate_mas_file(
     
     results['core_permeability'] = core_permeability
     
-    L_analytical = calculate_analytical_inductance(core_data, num_turns)
+    L_analytical = calculate_analytical_inductance(magnetic_data, num_turns)
     
     if L_analytical:
         results['analytical_inductance_H'] = L_analytical
