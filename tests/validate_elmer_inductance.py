@@ -1437,7 +1437,7 @@ def create_mesh_with_turns(
         if outer_surfs:
             gmsh.model.addPhysicalGroup(2, outer_surfs, tag=100, name="outer_boundary")
             print(f"  Added outer boundary: {len(outer_surfs)} surfaces")
-        
+
         # Compute wire diameter from turn cross-section area for mesh sizing
         if turns_info:
             wire_diameter = 2.0 * math.sqrt(turns_info[0].cross_section_area / math.pi)
@@ -2523,6 +2523,325 @@ def compute_core_losses(
         'steinmetz_beta': beta,
         'frequency_Hz': frequency,
         'temperature_C': temperature,
+    }
+
+
+def generate_sif_electrostatic(
+    output_path: str,
+    body_numbers: Dict[str, int],
+    turn_bodies: Dict[int, TurnInfo],
+    core_type: str = "concentric",
+    excited_winding: Optional[str] = None,
+    voltage: float = 1.0,
+) -> str:
+    """
+    Generate SIF for electrostatic simulation to compute capacitance.
+
+    Sets voltage on the excited winding's turn surfaces, grounds all other
+    windings and core. The outer boundary is grounded. Electrostatic energy
+    gives capacitance: C = 2*W / V².
+
+    For capacitance matrix: run N simulations, each exciting one winding.
+    """
+    core_id = body_numbers.get("core", 1)
+    air_id = body_numbers.get("air", max(body_numbers.values()) + 1)
+    coil_body_ids = list(turn_bodies.keys())
+
+    # Separate excited vs grounded winding bodies
+    excited_bodies = []
+    grounded_bodies = []
+    for bid, ti in turn_bodies.items():
+        if excited_winding and excited_winding.lower() in ti.winding.lower():
+            excited_bodies.append(bid)
+        else:
+            grounded_bodies.append(bid)
+
+    # If no winding specified, excite all
+    if not excited_bodies:
+        excited_bodies = coil_body_ids
+        grounded_bodies = []
+
+    sif_lines = [
+        "! Electrostatic simulation for capacitance extraction",
+        "",
+        'Check Keywords "Warn"',
+        "",
+        "Header",
+        '  Mesh DB "." "mesh"',
+        '  Results Directory "."',
+        "End",
+        "",
+        "Simulation",
+        "  Coordinate System = Cartesian 3D",
+        "  Simulation Type = Steady State",
+        "  Steady State Max Iterations = 1",
+        "  Max Output Level = 5",
+        "End",
+        "",
+        "Constants",
+        "  Permittivity Of Vacuum = 8.8542e-12",
+        "End",
+        "",
+        "! Materials — only permittivity matters for electrostatics",
+        "Material 1",
+        '  Name = "Ferrite"',
+        "  Relative Permittivity = 10.0",  # typical ferrite εr
+        "End",
+        "",
+        "Material 2",
+        '  Name = "Copper"',
+        "  Relative Permittivity = 1.0",
+        "End",
+        "",
+        "Material 3",
+        '  Name = "Air"',
+        "  Relative Permittivity = 1.0",
+        "End",
+        "",
+        "! Bodies",
+        f"Body {core_id}",
+        '  Name = "Core"',
+        "  Equation = 1",
+        "  Material = 1",
+        "End",
+        "",
+    ]
+
+    # Turn bodies
+    for bid in coil_body_ids:
+        ti = turn_bodies[bid]
+        sif_lines.extend([
+            f"Body {bid}",
+            f'  Name = "{ti.name}"',
+            "  Equation = 1",
+            "  Material = 2",
+            "End",
+            "",
+        ])
+
+    sif_lines.extend([
+        f"Body {air_id}",
+        '  Name = "Air"',
+        "  Equation = 1",
+        "  Material = 3",
+        "End",
+        "",
+        "! Equation — electrostatics only needs the main solver",
+        "Equation 1",
+        "  Active Solvers(1) = 1",
+        "End",
+        "",
+        "Solver 1",
+        '  Equation = "Electrostatic"',
+        '  Procedure = "StatElecSolve" "StatElecSolver"',
+        '  Variable = "Potential"',
+        "  Calculate Electric Energy = True",
+        "  Linear System Solver = Direct",
+        "  Linear System Direct Method = UMFPACK",
+        "End",
+        "",
+        "! Outer boundary grounded",
+        "Boundary Condition 1",
+        '  Name = "Outer"',
+        "  Target Boundaries(1) = 1",
+        "  Potential = 0.0",
+        "End",
+        "",
+    ])
+
+    # Conductor surface BCs using ElmerGrid -bulkbound convention:
+    # boundary type = 100 + body_id for conductor-air interfaces.
+    bc_id = 2
+    for bid in excited_bodies:
+        ti = turn_bodies[bid]
+        sif_lines.extend([
+            f"Boundary Condition {bc_id}",
+            f'  Name = "Excited_{ti.name}"',
+            f"  Target Boundaries(1) = {100 + bid}",
+            f"  Potential = {voltage}",
+            "End",
+            "",
+        ])
+        bc_id += 1
+
+    for bid in grounded_bodies:
+        ti = turn_bodies[bid]
+        sif_lines.extend([
+            f"Boundary Condition {bc_id}",
+            f'  Name = "Ground_{ti.name}"',
+            f"  Target Boundaries(1) = {100 + bid}",
+            "  Potential = 0.0",
+            "End",
+            "",
+        ])
+        bc_id += 1
+
+    sif_lines.extend([
+        f"Boundary Condition {bc_id}",
+        '  Name = "Core_Ground"',
+        f"  Target Boundaries(1) = {100 + core_id}",
+        "  Potential = 0.0",
+        "End",
+        "",
+    ])
+
+    sif_content = "\n".join(sif_lines)
+    sif_path = os.path.join(output_path, "case.sif")
+    with open(sif_path, 'w') as f:
+        f.write(sif_content)
+    with open(os.path.join(output_path, "ELMERSOLVER_STARTINFO"), 'w') as f:
+        f.write("case.sif\n")
+    return sif_path
+
+
+def compute_capacitance_matrix(
+    mas_file: str,
+    output_dir: str,
+    max_turns: int = 4,
+) -> Dict[str, Any]:
+    """
+    Compute NxN capacitance matrix via electrostatic energy method.
+
+    For each winding: apply V=1V, ground all others, solve electrostatics.
+    C_self = 2*W / V². For mutual: C_ij from combined excitation.
+    """
+    data = load_mas_file(mas_file)
+    magnetic_data = data.get('magnetic', data)
+    core_type = 'toroidal' if any(
+        k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
+        for k in ['T ', 'T_']
+    ) else 'concentric'
+
+    all_turns = extract_turns_info(magnetic_data, core_type)
+
+    # Group by winding
+    winding_turns = {}
+    for t in all_turns:
+        if t.winding not in winding_turns:
+            winding_turns[t.winding] = []
+        winding_turns[t.winding].append(t)
+    winding_names = list(winding_turns.keys())
+    N = len(winding_names)
+
+    # Select turns
+    all_selected = []
+    for wname in winding_names:
+        all_selected.extend(winding_turns[wname][:max_turns])
+
+    os.makedirs(output_dir, exist_ok=True)
+    step_file, ct = build_geometry(magnetic_data, output_dir, max_turns=max_turns,
+                                    all_windings=True)
+    mesh_dir, body_numbers, turn_bodies = create_mesh_with_turns(
+        step_file, output_dir, all_selected, core_type=ct
+    )
+
+    # Patch helper
+    mesh_bodies = set()
+    with open(os.path.join(mesh_dir, 'mesh.elements')) as f:
+        for line in f:
+            p = line.strip().split()
+            if len(p) >= 2:
+                mesh_bodies.add(int(p[1]))
+
+    def patch(sif_path):
+        with open(sif_path) as f:
+            s = f.read()
+        for b in range(1, max(mesh_bodies) + 1):
+            if f"Body {b}\n" not in s:
+                with open(sif_path, 'a') as f:
+                    f.write(f"\nBody {b}\n  Name = \"Air_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
+
+    # Run one simulation per winding.
+    # For electrostatics, we need internal boundary faces between conductor
+    # bodies and air. ElmerGrid's -bulkbound creates these.
+    energies = {}
+    V = 1.0
+    air_body = body_numbers.get('air', max(body_numbers.values()))
+    core_body = body_numbers.get('core', 1)
+
+    # Find the .msh file (saved during meshing)
+    msh_file = os.path.join(output_dir, "mesh.msh")
+
+    for wname in winding_names:
+        sim_dir = os.path.join(output_dir, f"cap_{wname}")
+        os.makedirs(sim_dir, exist_ok=True)
+
+        # Two-step ElmerGrid: 1) gmsh→Elmer, 2) Elmer→Elmer with -bulkbound.
+        # Step 1 creates basic mesh, step 2 adds internal conductor-air boundaries.
+        import shutil
+
+        # Step 1: gmsh → Elmer (remove internal BCs to start clean)
+        step1_dir = os.path.join(sim_dir, "mesh_step1")
+        subprocess.run(['ElmerGrid', '14', '2', msh_file, '-autoclean',
+                        '-scale', '0.001', '0.001', '0.001', '-removeintbcs'],
+                       capture_output=True, text=True)
+        # ElmerGrid outputs next to msh file — move to sim_dir
+        msh_base = os.path.splitext(os.path.basename(msh_file))[0]
+        src_mesh = os.path.join(os.path.dirname(msh_file), msh_base)
+        if os.path.exists(src_mesh):
+            if os.path.exists(step1_dir):
+                shutil.rmtree(step1_dir)
+            shutil.copytree(src_mesh, step1_dir)
+
+        # Step 2: Elmer → Elmer with -bulkbound for conductor-air interfaces
+        all_conductor_bodies = list(turn_bodies.keys()) + [core_body]
+        bulkbound_args = []
+        for bid in all_conductor_bodies:
+            bulkbound_args.extend(['-bulkbound', str(bid), str(air_body), str(100 + bid)])
+
+        target_mesh = os.path.join(sim_dir, 'mesh')
+        if os.path.exists(target_mesh):
+            shutil.rmtree(target_mesh)
+        subprocess.run(['ElmerGrid', '2', '2', step1_dir] + bulkbound_args +
+                       ['-out', target_mesh],
+                       capture_output=True, text=True)
+
+        sif_path = generate_sif_electrostatic(
+            sim_dir, body_numbers, turn_bodies,
+            core_type=ct, excited_winding=wname, voltage=V,
+        )
+        patch(sif_path)
+
+        print(f"  Capacitance sim: excite {wname} at {V}V...")
+        success, energy, output = run_elmer(sim_dir, timeout=120)
+
+        # Parse electric energy and capacitance matrix from output
+        e_energy = 0.0
+        cap_values = []
+        for line in output.split('\n'):
+            if 'Electric Energy' in line or 'Tot. Electric Energy' in line:
+                m = re.search(r'Energy\s*:\s*([\d.E+-]+)', line)
+                if m:
+                    e_energy = float(m.group(1))
+            # Elmer prints capacitance matrix when Capacitance Bodies is set
+            if 'Capacitance matrix' in line or 'Cap matrix' in line:
+                print(f"    {line.strip()}")
+            if re.match(r'\s+[\d.E+-]+\s+[\d.E+-]+', line):
+                # Could be capacitance matrix row
+                vals = re.findall(r'[\d.E+-]+', line)
+                if vals:
+                    cap_values.append([float(v) for v in vals])
+
+        energies[wname] = e_energy
+        C = 2 * e_energy / V**2 if V > 0 else 0
+        print(f"    Energy={e_energy:.4e} J, C={C*1e12:.2f} pF, ok={success}")
+
+    # Build capacitance matrix
+    C_matrix = [[0.0] * N for _ in range(N)]
+    for i, wname in enumerate(winding_names):
+        C_matrix[i][i] = 2 * energies[wname] / V**2
+
+    print(f"\nCAPACITANCE MATRIX (pF):")
+    header = "         " + "  ".join(f"{w:>12s}" for w in winding_names)
+    print(header)
+    for i, wi in enumerate(winding_names):
+        row = f"{wi:>8s} " + "  ".join(f"{C_matrix[i][j]*1e12:>12.2f}" for j in range(N))
+        print(row)
+
+    return {
+        'winding_names': winding_names,
+        'capacitance_matrix_F': C_matrix,
+        'energies': {str(k): v for k, v in energies.items()},
     }
 
 
