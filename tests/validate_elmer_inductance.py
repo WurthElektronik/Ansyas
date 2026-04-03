@@ -2572,11 +2572,12 @@ def run_harmonic_simulation(
         step_file, output_dir, primary, core_type=ct
     )
 
-    sif_path = generate_sif_harmonic(
+    # Generate CoilSolver SIF (proven to work), then modify for harmonic
+    sif_path = generate_sif_with_coil_solver(
         output_dir, body_numbers, turn_bodies,
         core_permeability=core_permeability,
-        frequency=frequency,
         total_current=total_current,
+        num_turns=len(primary),
         core_type=ct,
     )
 
@@ -2594,17 +2595,42 @@ def run_harmonic_simulation(
             with open(sif_path, 'a') as f:
                 f.write(f"\nBody {b}\n  Name = \"Air_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
 
+    # Modify SIF for harmonic: swap solver, add frequency, fix BCs
+    with open(sif_path) as f:
+        sif = f.read()
+    omega = 2 * math.pi * frequency
+    sif = sif.replace('"WhitneyAVSolver"', '"WhitneyAVHarmonicSolver"')
+    sif = sif.replace('Variable = AV\n', 'Variable = AV[AV re:1 AV im:1]\n')
+    sif = sif.replace('Max Output Level = 7',
+                       f'Max Output Level = 7\n  Angular Frequency = {omega:.6f}')
+    # Add Angular Frequency to solver block too
+    sif = sif.replace('"WhitneyAVHarmonicSolver"',
+                       f'"WhitneyAVHarmonicSolver"\n  Angular Frequency = {omega:.6f}')
+    # Fix boundary conditions for complex AV
+    sif = sif.replace('AV {e} = Real 0.0\n  AV = Real 0.0',
+                       'AV re {e} = Real 0.0\n  AV im {e} = Real 0.0\n  AV re = Real 0.0\n  AV im = Real 0.0')
+    # Use MUMPS for the complex system (UMFPACK can't handle it)
+    sif = sif.replace('Direct Method = UMFPack', 'Direct Method = MUMPS')
+    # Add Joule Heating calculation to CalcFields
+    if 'Calculate Joule Heating' not in sif:
+        sif = sif.replace('Calculate Current Density = True',
+                           'Calculate Current Density = True\n  Calculate Joule Heating = True')
+    with open(sif_path, 'w') as f:
+        f.write(sif)
+
     print(f"Running AC harmonic at f={frequency:.0f} Hz...")
     success, energy, output = run_elmer(output_dir, timeout=300)
 
-    # Extract Joule heating from Elmer output
+    # Extract Joule heating from Elmer output.
+    # CalcFields prints total ohmic loss as "Eddy current power: X.XXXXXE+XX"
+    # (not "Joule Heating" — that's only the per-element VTU field name)
     joule_losses = 0.0
     for line in output.split('\n'):
-        if 'Joule Heating' in line or 'Joule heating' in line:
+        if 'Eddy current power:' in line:
             import re as _re
-            m = _re.search(r'[\d.E+-]+', line.split(':')[-1])
+            m = _re.search(r'power:\s+([\d.E+-]+)', line)
             if m:
-                joule_losses = float(m.group())
+                joule_losses = float(m.group(1))
 
     omega = 2 * math.pi * frequency
     L = calculate_inductance_from_energy(energy, total_current)
