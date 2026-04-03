@@ -3257,6 +3257,201 @@ def run_harmonic_simulation(
     return results
 
 
+def run_full_characterization(
+    mas_file: str,
+    output_dir: str,
+    max_turns: int = 4,
+    frequency: float = 100000.0,
+    total_current: float = 1.0,
+    temperature: float = 25.0,
+    phases: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Full electromagnetic characterization of a magnetic component.
+
+    Runs all available analysis phases and returns combined results:
+    - DC magnetostatic: self-inductance (Phase 1)
+    - Inductance matrix: mutual inductance, coupling, leakage (Phase 2)
+    - AC harmonic: winding losses, AC resistance (Phase 4)
+    - Core losses: Steinmetz from FEM B-field distribution (Phase 5)
+    - Stray capacitance: self and mutual capacitance (Phase 6)
+
+    Args:
+        mas_file: Path to MAS JSON file
+        output_dir: Output directory for simulation files
+        max_turns: Maximum turns per winding to simulate
+        frequency: Operating frequency in Hz
+        total_current: Excitation current in A (peak)
+        temperature: Operating temperature in °C
+        phases: List of phases to run. None = all.
+                Options: "inductance", "matrix", "ac", "core_loss", "capacitance"
+
+    Returns:
+        Dict with all characterization results
+    """
+    if phases is None:
+        phases = ["inductance", "matrix", "ac", "core_loss", "capacitance"]
+
+    results = {
+        'mas_file': mas_file,
+        'frequency_Hz': frequency,
+        'temperature_C': temperature,
+        'max_turns': max_turns,
+    }
+
+    data = load_mas_file(mas_file)
+    magnetic_data = data.get('magnetic', data)
+    core_type = 'toroidal' if any(
+        k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
+        for k in ['T ', 'T_']
+    ) else 'concentric'
+
+    # Get material info
+    func_desc = get_core_data(magnetic_data).get('functionalDescription', {})
+    mat_name = func_desc.get('material', 'N87')
+    if isinstance(mat_name, dict):
+        mat_name = mat_name.get('name', 'N87')
+    core_permeability = get_material_permeability(mat_name, temperature)
+    results['core_material'] = mat_name
+    results['core_permeability'] = core_permeability
+
+    # Get winding info
+    all_turns = extract_turns_info(magnetic_data, core_type)
+    winding_names = sorted(set(t.winding for t in all_turns))
+    results['winding_names'] = winding_names
+    results['total_turns'] = {w: len([t for t in all_turns if t.winding == w]) for w in winding_names}
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # === Phase 1: DC Magnetostatic (self-inductance) ===
+    if "inductance" in phases:
+        print(f"\n{'='*60}")
+        print("Phase 1: DC Self-Inductance")
+        print(f"{'='*60}")
+        try:
+            ind_dir = os.path.join(output_dir, "inductance")
+            ind_result = validate_mas_file(
+                mas_file, ind_dir, max_turns=max_turns,
+                total_current=total_current, method="coilsolver",
+            )
+            results['magnetizing_inductance_H'] = ind_result.get('elmer_inductance_H', 0)
+            results['magnetizing_inductance_uH'] = ind_result.get('elmer_inductance_uH', 0)
+            results['analytical_inductance_uH'] = ind_result.get('analytical_inductance_uH', 0)
+            results['inductance_error_percent'] = ind_result.get('error_percent', 0)
+            print(f"  L = {results['magnetizing_inductance_uH']:.2f} uH")
+        except Exception as e:
+            results['inductance_error'] = str(e)
+            print(f"  FAILED: {e}")
+
+    # === Phase 2: Inductance Matrix ===
+    if "matrix" in phases and len(winding_names) > 1:
+        print(f"\n{'='*60}")
+        print("Phase 2: Inductance Matrix")
+        print(f"{'='*60}")
+        try:
+            matrix_dir = os.path.join(output_dir, "matrix")
+            matrix_result = compute_inductance_matrix(
+                mas_file, matrix_dir, max_turns=max_turns,
+                total_current=total_current,
+            )
+            results['inductance_matrix_H'] = matrix_result['inductance_matrix_H']
+            results['coupling_matrix'] = matrix_result['coupling_matrix']
+            results['leakage_inductance_H'] = matrix_result['leakage_inductance_H']
+        except Exception as e:
+            results['matrix_error'] = str(e)
+            print(f"  FAILED: {e}")
+
+    # === Phase 4: AC Harmonic (winding losses) ===
+    if "ac" in phases:
+        print(f"\n{'='*60}")
+        print(f"Phase 4: AC Harmonic at {frequency/1e3:.0f} kHz")
+        print(f"{'='*60}")
+        try:
+            ac_dir = os.path.join(output_dir, "ac")
+            ac_result = run_harmonic_simulation(
+                mas_file, ac_dir, max_turns=max_turns,
+                frequency=frequency, total_current=total_current,
+            )
+            results['ac_resistance_Ohm'] = ac_result.get('ac_resistance_Ohm', 0)
+            results['joule_losses_W'] = ac_result.get('joule_losses_W', 0)
+            print(f"  R_ac = {results['ac_resistance_Ohm']*1e3:.3f} mOhm")
+            print(f"  Joule losses = {results['joule_losses_W']:.4e} W")
+        except Exception as e:
+            results['ac_error'] = str(e)
+            print(f"  FAILED: {e}")
+
+    # === Phase 5: Core Losses ===
+    if "core_loss" in phases:
+        print(f"\n{'='*60}")
+        print("Phase 5: Core Losses (Steinmetz)")
+        print(f"{'='*60}")
+        try:
+            # Use the inductance simulation's VTU output
+            ind_dir = os.path.join(output_dir, "inductance")
+            if os.path.exists(ind_dir):
+                cl_result = compute_core_losses(
+                    ind_dir, material_name=mat_name,
+                    frequency=frequency, core_body_id=1,
+                    temperature=temperature,
+                )
+                results['core_loss_W'] = cl_result.get('core_loss_W', 0)
+                results['B_avg_T'] = cl_result.get('B_avg_T', 0)
+                results['B_max_T'] = cl_result.get('B_max_T', 0)
+                results['core_volume_m3'] = cl_result.get('core_volume_m3', 0)
+                results['Pv_avg_W_m3'] = cl_result.get('Pv_avg_W_m3', 0)
+                print(f"  B_avg = {results['B_avg_T']:.4f} T")
+                print(f"  Core loss = {results['core_loss_W']:.4f} W")
+            else:
+                results['core_loss_error'] = "Run inductance phase first for VTU"
+        except Exception as e:
+            results['core_loss_error'] = str(e)
+            print(f"  FAILED: {e}")
+
+    # === Phase 6: Stray Capacitance ===
+    if "capacitance" in phases:
+        print(f"\n{'='*60}")
+        print("Phase 6: Stray Capacitance")
+        print(f"{'='*60}")
+        try:
+            cap_dir = os.path.join(output_dir, "capacitance")
+            cap_result = compute_capacitance_matrix(
+                mas_file, cap_dir, max_turns=max_turns,
+            )
+            results['capacitance_matrix_F'] = cap_result['capacitance_matrix_F']
+            # Print summary
+            C = cap_result['capacitance_matrix_F']
+            for i, w in enumerate(winding_names):
+                print(f"  C_{w} = {C[i][i]*1e12:.2f} pF")
+        except Exception as e:
+            results['capacitance_error'] = str(e)
+            print(f"  FAILED: {e}")
+
+    # === Summary ===
+    print(f"\n{'='*60}")
+    print("FULL CHARACTERIZATION SUMMARY")
+    print(f"{'='*60}")
+    print(f"Component: {os.path.basename(mas_file)}")
+    print(f"Core: {mat_name}, mu_r={core_permeability:.0f}")
+    winding_summary = ', '.join(f'{w} ({results["total_turns"][w]}T)' for w in winding_names)
+    print(f"Windings: {winding_summary}")
+    print(f"Simulated turns: {max_turns}/winding")
+    if 'magnetizing_inductance_uH' in results:
+        print(f"L_mag = {results['magnetizing_inductance_uH']:.2f} uH")
+    if 'coupling_matrix' in results and len(winding_names) > 1:
+        k = results['coupling_matrix'][0][1] if len(results['coupling_matrix']) > 1 else 0
+        print(f"k = {k:.4f}")
+    if 'ac_resistance_Ohm' in results:
+        print(f"R_ac({frequency/1e3:.0f}kHz) = {results['ac_resistance_Ohm']*1e3:.3f} mOhm")
+    if 'core_loss_W' in results:
+        print(f"P_core = {results['core_loss_W']:.4f} W")
+    if 'capacitance_matrix_F' in results:
+        C = results['capacitance_matrix_F']
+        for i, w in enumerate(winding_names):
+            print(f"C_{w} = {C[i][i]*1e12:.2f} pF")
+
+    return results
+
+
 def validate_mas_file(
     mas_file: str,
     output_dir: str,
