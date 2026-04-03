@@ -2313,6 +2313,219 @@ def calculate_inductance_from_energy(energy: float, current: float) -> float:
     return 2 * energy / (current ** 2)
 
 
+def get_steinmetz_coefficients(material_name: str, frequency: float = 100000.0) -> Optional[Dict]:
+    """Get Steinmetz coefficients (k, alpha, beta) from PyOM for a given material and frequency."""
+    if not HAS_PYMKF:
+        return None
+    try:
+        mat_data = PyOM.get_material_data(material_name)
+        if isinstance(mat_data, str):
+            mat_data = json.loads(mat_data)
+        vl = mat_data.get('volumetricLosses', {}).get('default', [])
+        for entry in vl:
+            if entry.get('method') == 'steinmetz':
+                ranges = entry.get('ranges', [])
+                for r in ranges:
+                    f_min = r.get('minimumFrequency', 0)
+                    f_max = r.get('maximumFrequency', float('inf'))
+                    if f_min <= frequency <= f_max:
+                        return {
+                            'k': r.get('k', 1.0),
+                            'alpha': r.get('alpha', 1.5),
+                            'beta': r.get('beta', 2.5),
+                            'ct0': r.get('ct0', 0),
+                            'ct1': r.get('ct1', 0),
+                            'ct2': r.get('ct2', 0),
+                        }
+                # If no range matches, use first range
+                if ranges:
+                    r = ranges[0]
+                    return {
+                        'k': r.get('k', 1.0),
+                        'alpha': r.get('alpha', 1.5),
+                        'beta': r.get('beta', 2.5),
+                    }
+    except Exception:
+        pass
+    return None
+
+
+def compute_core_losses(
+    sim_dir: str,
+    material_name: str,
+    frequency: float,
+    core_body_id: int = 1,
+    temperature: float = 25.0,
+) -> Dict[str, float]:
+    """
+    Compute core losses from FEM B-field distribution using Steinmetz equation.
+
+    Reads the VTU output from an Elmer simulation, extracts the B-field in
+    the core body, and applies Steinmetz: Pv = k * f^alpha * B_peak^beta.
+
+    Unlike analytical methods that use a single average B, this integrates
+    the loss density element-by-element, capturing the actual B distribution
+    including fringing, gap effects, and non-uniform flux paths.
+
+    Returns:
+        core_loss_W: Total core loss (W)
+        core_volume_m3: Core volume (m³)
+        B_avg_T: Volume-averaged |B| in core (T)
+        B_max_T: Maximum |B| in core (T)
+        Pv_avg_W_m3: Average volumetric loss density (W/m³)
+    """
+    import numpy as np
+
+    # Find VTU file
+    vtu_path = None
+    mesh_dir = os.path.join(sim_dir, 'mesh')
+    for f in os.listdir(mesh_dir):
+        if f.endswith('.vtu') and 'results' in f:
+            vtu_path = os.path.join(mesh_dir, f)
+            break
+    if not vtu_path:
+        return {'error': 'No VTU file found', 'core_loss_W': 0}
+
+    # Read VTU with meshio (more reliable than pyvista for Elmer output)
+    try:
+        import meshio
+        mesh = meshio.read(vtu_path)
+    except ImportError:
+        try:
+            import pyvista as pv
+            mesh_pv = pv.read(vtu_path)
+            # Convert to numpy arrays
+            cell_data_keys = list(mesh_pv.cell_data.keys())
+            point_data_keys = list(mesh_pv.point_data.keys())
+            print(f"VTU fields: cells={cell_data_keys[:5]}, points={point_data_keys[:5]}")
+            return {'error': 'meshio not available, pyvista fallback incomplete', 'core_loss_W': 0}
+        except ImportError:
+            return {'error': 'Neither meshio nor pyvista available', 'core_loss_W': 0}
+
+    # Find B-field — Elmer writes elemental fields to point data with " e" suffix
+    B_field = None
+    B_is_point_data = False
+    for key in mesh.point_data:
+        if 'magnetic flux density' in key.lower():
+            B_field = mesh.point_data[key]
+            B_is_point_data = True
+            break
+    if B_field is None:
+        for key in mesh.cell_data:
+            if 'magnetic flux density' in key.lower():
+                B_field = mesh.cell_data[key]
+                break
+
+    if B_field is None:
+        available = list(mesh.cell_data.keys()) + list(mesh.point_data.keys())
+        return {'error': f'B-field not found. Available: {available[:10]}', 'core_loss_W': 0}
+
+    # Get geometry IDs (cell data, tetra block only)
+    geom_ids_raw = None
+    for key in mesh.cell_data:
+        if 'geometryids' in key.lower() or 'geometry' in key.lower():
+            geom_ids_raw = mesh.cell_data[key]
+            break
+
+    # Extract tetra block only
+    points = mesh.points
+    tetra_cells = None
+    tetra_geom_ids = None
+    for i, cb in enumerate(mesh.cells):
+        if cb.type == 'tetra':
+            tetra_cells = cb.data
+            if geom_ids_raw is not None and isinstance(geom_ids_raw, list):
+                tetra_geom_ids = geom_ids_raw[i]
+            break
+
+    if tetra_cells is None:
+        return {'error': 'No tetrahedral elements in VTU', 'core_loss_W': 0}
+
+    n_tets = len(tetra_cells)
+
+    # Compute |B| per tetrahedron
+    if B_is_point_data:
+        # B is per-node — average over 4 nodes of each tet
+        if B_field.ndim == 2:
+            B_at_nodes = np.linalg.norm(B_field, axis=1)
+        else:
+            B_at_nodes = np.abs(B_field)
+        B_mag = np.array([B_at_nodes[tetra_cells[j]].mean() for j in range(n_tets)])
+    else:
+        if isinstance(B_field, list):
+            B_field = B_field[0]  # tetra block
+        if B_field.ndim == 2:
+            B_mag = np.linalg.norm(B_field, axis=1)
+        else:
+            B_mag = np.abs(B_field)
+
+    # Compute tet volumes
+    p0 = points[tetra_cells[:, 0]]
+    v1 = points[tetra_cells[:, 1]] - p0
+    v2 = points[tetra_cells[:, 2]] - p0
+    v3 = points[tetra_cells[:, 3]] - p0
+    volumes = np.abs(np.einsum('ij,ij->i', v1, np.cross(v2, v3))) / 6.0
+
+    # Filter core body
+    if tetra_geom_ids is not None:
+        core_mask = (tetra_geom_ids.flatten() == core_body_id)
+    else:
+        core_mask = np.ones(n_tets, dtype=bool)
+
+    B_core = B_mag[core_mask]
+    V_core = volumes[core_mask]
+
+    if len(B_core) == 0 or V_core.sum() == 0:
+        return {'error': 'No core elements found', 'core_loss_W': 0}
+
+    core_volume = V_core.sum()
+    B_avg = np.average(B_core, weights=V_core)
+    B_max = B_core.max()
+
+    # Get Steinmetz coefficients
+    steinmetz = get_steinmetz_coefficients(material_name, frequency)
+    if steinmetz is None:
+        return {
+            'error': 'Steinmetz coefficients not found',
+            'core_volume_m3': core_volume,
+            'B_avg_T': B_avg,
+            'B_max_T': B_max,
+            'core_loss_W': 0,
+        }
+
+    k = steinmetz['k']
+    alpha = steinmetz['alpha']
+    beta = steinmetz['beta']
+
+    # Steinmetz: Pv = k * f^alpha * B^beta (W/m³)
+    # Integrate element-by-element for non-uniform B distribution
+    Pv_per_element = k * (frequency ** alpha) * (B_core ** beta)
+    total_loss = np.sum(Pv_per_element * V_core)
+    Pv_avg = total_loss / core_volume if core_volume > 0 else 0
+
+    # Temperature correction: Pv(T) = Pv(25°C) * (ct0 - ct1*T + ct2*T²)
+    ct0 = steinmetz.get('ct0', 0)
+    ct1 = steinmetz.get('ct1', 0)
+    ct2 = steinmetz.get('ct2', 0)
+    if ct0 > 0:
+        temp_factor = ct0 - ct1 * temperature + ct2 * temperature**2
+        total_loss *= temp_factor
+        Pv_avg *= temp_factor
+
+    return {
+        'core_loss_W': total_loss,
+        'core_volume_m3': core_volume,
+        'B_avg_T': float(B_avg),
+        'B_max_T': float(B_max),
+        'Pv_avg_W_m3': float(Pv_avg),
+        'steinmetz_k': k,
+        'steinmetz_alpha': alpha,
+        'steinmetz_beta': beta,
+        'frequency_Hz': frequency,
+        'temperature_C': temperature,
+    }
+
+
 def generate_sif_harmonic(
     output_path: str,
     body_numbers: Dict[str, int],
