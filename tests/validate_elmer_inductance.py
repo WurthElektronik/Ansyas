@@ -315,14 +315,7 @@ def calculate_analytical_inductance(magnetic_data: Dict, num_turns: int) -> Opti
         for w in coil.get('functionalDescription', []):
             w['numberTurns'] = num_turns
 
-        # Remove subtractive gaps (FEM geometry doesn't model air gaps yet).
-        # Keep only residual gaps for fair comparison.
-        gapping = core.get('functionalDescription', {}).get('gapping', [])
-        ungapped = [g for g in gapping if g.get('type') != 'subtractive']
-        if not ungapped:
-            # Need at least residual gaps for PyMKF
-            ungapped = [{'type': 'residual', 'length': 1e-5}] * 2
-        core['functionalDescription']['gapping'] = ungapped
+        # Keep full gapping — FEM now models air gaps in the geometry.
 
         op = {
             'conditions': {'ambientTemperature': 25},
