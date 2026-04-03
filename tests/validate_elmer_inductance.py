@@ -272,19 +272,24 @@ def get_material_permeability(material_name: str, temperature: float = 25.0) -> 
             initial = perm.get('initial', [])
             
             if initial:
-                # Find closest temperature
-                best_match = None
-                best_diff = float('inf')
-                for entry in initial:
-                    temp = entry.get('temperature')
-                    if temp is not None:
-                        diff = abs(temp - temperature)
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_match = entry.get('value')
-                
-                if best_match is not None:
-                    return float(best_match)
+                # Dict format (powder cores): single nominal value
+                if isinstance(initial, dict):
+                    nominal = initial.get('nominal') or initial.get('value')
+                    if nominal is not None:
+                        return float(nominal)
+                # List format (ferrites): find closest temperature
+                elif isinstance(initial, list):
+                    best_match = None
+                    best_diff = float('inf')
+                    for entry in initial:
+                        temp = entry.get('temperature')
+                        if temp is not None:
+                            diff = abs(temp - temperature)
+                            if diff < best_diff:
+                                best_diff = diff
+                                best_match = entry.get('value')
+                    if best_match is not None:
+                        return float(best_match)
         except Exception:
             pass
     
