@@ -2533,33 +2533,42 @@ def generate_sif_electrostatic(
     core_type: str = "concentric",
     excited_winding: Optional[str] = None,
     voltage: float = 1.0,
+    winding_voltages: Optional[Dict[str, float]] = None,
 ) -> str:
     """
     Generate SIF for electrostatic simulation to compute capacitance.
 
-    Sets voltage on the excited winding's turn surfaces, grounds all other
-    windings and core. The outer boundary is grounded. Electrostatic energy
-    gives capacitance: C = 2*W / V².
+    Sets voltage on conductor surfaces, grounds others + core + outer boundary.
+    - Single winding: excited_winding="Primary", voltage=1.0
+    - Multiple windings: winding_voltages={"Primary": 1.0, "Secondary": 1.0}
 
-    For capacitance matrix: run N simulations, each exciting one winding.
+    Electrostatic energy gives capacitance: C = 2*W / V².
     """
     core_id = body_numbers.get("core", 1)
     air_id = body_numbers.get("air", max(body_numbers.values()) + 1)
     coil_body_ids = list(turn_bodies.keys())
 
-    # Separate excited vs grounded winding bodies
-    excited_bodies = []
-    grounded_bodies = []
-    for bid, ti in turn_bodies.items():
-        if excited_winding and excited_winding.lower() in ti.winding.lower():
-            excited_bodies.append(bid)
-        else:
-            grounded_bodies.append(bid)
+    # Build voltage map per body
+    body_voltage = {}  # bid -> voltage (None = grounded)
+    if winding_voltages:
+        for bid, ti in turn_bodies.items():
+            for wname, v in winding_voltages.items():
+                if wname.lower() in ti.winding.lower():
+                    body_voltage[bid] = v
+                    break
+    elif excited_winding:
+        for bid, ti in turn_bodies.items():
+            if excited_winding.lower() in ti.winding.lower():
+                body_voltage[bid] = voltage
 
-    # If no winding specified, excite all
+    excited_bodies = [bid for bid in coil_body_ids if bid in body_voltage]
+    grounded_bodies = [bid for bid in coil_body_ids if bid not in body_voltage]
+
     if not excited_bodies:
         excited_bodies = coil_body_ids
         grounded_bodies = []
+        for bid in excited_bodies:
+            body_voltage[bid] = voltage
 
     sif_lines = [
         "! Electrostatic simulation for capacitance extraction",
@@ -2654,11 +2663,12 @@ def generate_sif_electrostatic(
     bc_id = 2
     for bid in excited_bodies:
         ti = turn_bodies[bid]
+        v = body_voltage.get(bid, voltage)
         sif_lines.extend([
             f"Boundary Condition {bc_id}",
             f'  Name = "Excited_{ti.name}"',
             f"  Target Boundaries(1) = {100 + bid}",
-            f"  Potential = {voltage}",
+            f"  Potential = {v}",
             "End",
             "",
         ])
@@ -2826,10 +2836,70 @@ def compute_capacitance_matrix(
         C = 2 * e_energy / V**2 if V > 0 else 0
         print(f"    Energy={e_energy:.4e} J, C={C*1e12:.2f} pF, ok={success}")
 
+    # Mutual capacitance: excite pairs with V=1 on both, compute combined energy
+    for i in range(N):
+        for j in range(i + 1, N):
+            wi, wj = winding_names[i], winding_names[j]
+            sim_dir = os.path.join(output_dir, f"cap_{wi}_{wj}")
+            os.makedirs(sim_dir, exist_ok=True)
+
+            step1_dir = os.path.join(sim_dir, "mesh_step1")
+            src_mesh = os.path.join(os.path.dirname(msh_file),
+                                     os.path.splitext(os.path.basename(msh_file))[0])
+            if os.path.exists(src_mesh):
+                if os.path.exists(step1_dir):
+                    shutil.rmtree(step1_dir)
+                shutil.copytree(src_mesh, step1_dir)
+            else:
+                subprocess.run(['ElmerGrid', '14', '2', msh_file, '-autoclean',
+                                '-scale', '0.001', '0.001', '0.001', '-removeintbcs'],
+                               capture_output=True, text=True)
+                src_mesh2 = os.path.join(os.path.dirname(msh_file),
+                                          os.path.splitext(os.path.basename(msh_file))[0])
+                if os.path.exists(src_mesh2):
+                    shutil.copytree(src_mesh2, step1_dir)
+
+            target_mesh = os.path.join(sim_dir, 'mesh')
+            if os.path.exists(target_mesh):
+                shutil.rmtree(target_mesh)
+            subprocess.run(['ElmerGrid', '2', '2', step1_dir] + bulkbound_args +
+                           ['-out', target_mesh],
+                           capture_output=True, text=True)
+
+            sif_path = generate_sif_electrostatic(
+                sim_dir, body_numbers, turn_bodies,
+                core_type=ct, winding_voltages={wi: V, wj: V},
+            )
+            patch(sif_path)
+
+            print(f"  Capacitance sim: excite {wi}+{wj} at {V}V...")
+            success, energy, output = run_elmer(sim_dir, timeout=120)
+
+            e_energy = 0.0
+            for line in output.split('\n'):
+                if 'Electric Energy' in line or 'Tot. Electric Energy' in line:
+                    m = re.search(r'Energy\s*:\s*([\d.E+-]+)', line)
+                    if m:
+                        e_energy = float(m.group(1))
+
+            energies[(wi, wj)] = e_energy
+            print(f"    Energy={e_energy:.4e} J, ok={success}")
+
     # Build capacitance matrix
     C_matrix = [[0.0] * N for _ in range(N)]
+
+    # Self-capacitance: Cii = 2*Wi / V²
     for i, wname in enumerate(winding_names):
         C_matrix[i][i] = 2 * energies[wname] / V**2
+
+    # Mutual capacitance: Cij = (W_ij - Wi - Wj) / (Vi * Vj)
+    for i in range(N):
+        for j in range(i + 1, N):
+            wi, wj = winding_names[i], winding_names[j]
+            W_ij = energies.get((wi, wj), 0)
+            Cij = (W_ij - energies[wi] - energies[wj]) / (V * V)
+            C_matrix[i][j] = Cij
+            C_matrix[j][i] = Cij
 
     print(f"\nCAPACITANCE MATRIX (pF):")
     header = "         " + "  ".join(f"{w:>12s}" for w in winding_names)
