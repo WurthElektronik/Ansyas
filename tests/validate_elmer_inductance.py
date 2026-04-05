@@ -169,9 +169,15 @@ def extract_turns_info(magnetic_data: Dict, core_type: str = "concentric") -> Li
             z_pos = coords[1] * 1000 if len(coords) > 1 else 0  # height = Y
             x_pos = 0.0
         
-        # Cross-section area in mm^2
+        # Cross-section area in mm^2.
+        # For round wires, use the 8-segment polygon area (matching MVB's
+        # WIRE_POLYGON_SEGMENTS=8) so J=I/A gives the correct current
+        # through the actual polygon mesh body. Circle area would undercount
+        # J by ~10%, causing ~19% inductance error.
         if shape == 'round':
-            area = math.pi * (dims[0] * 1000 / 2) ** 2
+            n_seg = 8  # must match WIRE_POLYGON_SEGMENTS in cadquery_builder
+            radius_mm = dims[0] * 1000 / 2
+            area = (n_seg / 2) * radius_mm**2 * math.sin(2 * math.pi / n_seg)
         else:  # rectangular
             area = dims[0] * dims[1] * 1e6
         
@@ -297,6 +303,82 @@ def get_material_permeability(material_name: str, temperature: float = 25.0) -> 
     return float(default_permeabilities.get(material_name, 2000))
 
 
+def get_effective_residual_gap(magnetic_data: Dict, ae_eff: float) -> float:
+    """
+    Compute the equivalent effective gap length (meters) for residual gaps only.
+
+    Uses the actual residual gap data from functionalDescription.gapping. For each
+    residual gap, computes its reluctance R_i = l_i / (µ₀ * A_i), sums them with
+    proper series/parallel topology (outer-leg gaps in parallel), then converts the
+    total to an equivalent gap length for the mean magnetic path:
+
+        l_gap_eff = R_gap_total * µ₀ * ae_eff
+
+    Returns 0.0 if any subtractive (machined) gap exists — those are already modeled
+    geometrically in the FEM mesh.
+
+    Args:
+        magnetic_data: Full magnetic dict (with PyOM-autocompleted core data).
+        ae_eff: Effective cross-section area of core in m² (from processedDescription).
+    """
+    core_data = magnetic_data.get('core', magnetic_data)
+
+    # If there are intentional subtractive gaps (from machining), they're in the FEM geometry.
+    geo = core_data.get('geometricalDescription', {})
+    geo_list = geo if isinstance(geo, list) else ([geo] if geo else [])
+    for piece in geo_list:
+        for m in (piece.get('machining') or []):
+            if m.get('length', 0) > 1e-5:  # >10 µm → intentional subtractive gap
+                return 0.0
+
+    # Collect residual gaps from functionalDescription.gapping
+    func_desc = core_data.get('functionalDescription', {})
+    gaps = func_desc.get('gapping', [])
+    residual_gaps = [g for g in gaps if g.get('type') == 'residual']
+    if not residual_gaps or ae_eff <= 0:
+        return 0.0
+
+    mu_0 = 4e-7 * math.pi
+
+    # Separate center-post gaps from outer-leg gaps.
+    # Center-post gap is at x≈0; outer-leg gaps are at |x| > threshold.
+    # In E-cores, outer legs carry half the flux (in parallel), so their gap
+    # reluctances add in parallel: R_outer_total = R_each_outer / num_outer_legs.
+    center_gaps = [g for g in residual_gaps if abs(g.get('coordinates', [0])[0]) < 1e-4]
+    outer_gaps  = [g for g in residual_gaps if abs(g.get('coordinates', [0])[0]) >= 1e-4]
+
+    R_gap_total = 0.0
+    for g in center_gaps:
+        l = g.get('length', 1e-5)
+        A = g.get('area', ae_eff)
+        if A > 0:
+            R_gap_total += l / (mu_0 * A)
+
+    if outer_gaps:
+        # Outer legs in parallel: R_parallel = 1 / sum(1/R_i)
+        inv_sum = sum(mu_0 * g.get('area', ae_eff) / g.get('length', 1e-5) for g in outer_gaps
+                      if g.get('area', 0) > 0 and g.get('length', 0) > 0)
+        if inv_sum > 0:
+            R_gap_total += 1.0 / inv_sum
+
+    # Convert total reluctance to equivalent gap length for the effective path area
+    return R_gap_total * mu_0 * ae_eff
+
+
+def apply_residual_gap_to_permeability(mu_r: float, le: float, l_gap_eff: float) -> float:
+    """
+    Compute effective permeability that accounts for residual mating-surface gaps.
+
+        mu_eff = le / (le / mu_r + l_gap_eff)
+
+    This distributes the reluctance of the unmodeled residual gaps into the core material
+    permeability, so the FEM gets the correct total reluctance without explicit gap meshing.
+    """
+    if l_gap_eff <= 0 or le <= 0:
+        return mu_r
+    return le / (le / mu_r + l_gap_eff)
+
+
 def calculate_analytical_inductance(magnetic_data: Dict, num_turns: int) -> Optional[float]:
     """Calculate analytical inductance using PyMKF reluctance model.
 
@@ -362,6 +444,69 @@ def calculate_analytical_inductance(magnetic_data: Dict, num_turns: int) -> Opti
     return None
 
 
+def apply_litz_conducting_diameter(magnetic_data: Dict) -> Dict:
+    """For Litz wires, inject conductingDiameter into coil data and update turnsDescription.
+
+    This makes both MVB (geometry) and extract_turns_info (SIF generation) use
+    the true conductor cross-section (wire bundle without serving) instead of
+    the outer diameter which includes insulation/serving.
+
+    Returns the modified magnetic_data (original is not modified).
+    """
+    import copy as _copy, math as _math
+    coil = magnetic_data.get('coil', {})
+    coil_fd = coil.get('functionalDescription', [])
+    if not coil_fd:
+        return magnetic_data
+
+    coil_copy = _copy.deepcopy(coil)
+    modified = False
+    for winding in coil_copy.get('functionalDescription', []):
+        wire = winding.get('wire', {})
+        if not isinstance(wire, dict):
+            continue
+        if wire.get('type', '').lower() != 'litz':
+            continue
+        if wire.get('conductingDiameter') and (wire['conductingDiameter'] or {}).get('nominal'):
+            continue  # already set
+        n_cond = wire.get('numberConductors', 1)
+        strand = wire.get('strand', '')
+        strand_d = None
+        if isinstance(strand, dict):
+            sd = strand.get('conductingDiameter')
+            if isinstance(sd, dict):
+                strand_d = sd.get('nominal') or sd.get('maximum')
+        elif isinstance(strand, str) and strand and HAS_PYOM:
+            try:
+                strand_data = PyOM.find_wire_by_name(strand)
+                if isinstance(strand_data, dict):
+                    sd = strand_data.get('conductingDiameter')
+                    if isinstance(sd, dict):
+                        strand_d = sd.get('nominal') or sd.get('maximum')
+            except Exception:
+                pass
+        if strand_d and strand_d > 0 and n_cond > 1:
+            cond_d = strand_d * _math.sqrt(n_cond)
+            wire['conductingDiameter'] = {'nominal': cond_d}
+            modified = True
+            outer_d = (wire.get('outerDiameter') or {})
+            outer_mm = (outer_d.get('maximum') or outer_d.get('nominal') or 0) * 1e3
+            print(f"  Litz wire: {n_cond} strands × {strand_d*1e3:.3f}mm → "
+                  f"conducting diameter = {cond_d*1e3:.3f}mm "
+                  f"(outer = {outer_mm:.3f}mm)")
+            # Also update turnsDescription.dimensions so extract_turns_info uses
+            # conducting diameter for cross_section_area (and J computation in SIF).
+            # cadquery_builder also reads dims per-turn and would otherwise override
+            # the conductingDiameter injection with the outer diameter.
+            winding_name = winding.get('name', '')
+            for turn in coil_copy.get('turnsDescription', []):
+                if turn.get('winding', '') == winding_name:
+                    turn['dimensions'] = [cond_d, cond_d]
+    if modified:
+        return {**magnetic_data, 'coil': coil_copy}
+    return magnetic_data
+
+
 def build_geometry(magnetic_data: Dict, output_path: str,
                    max_turns: Optional[int] = None, include_bobbin: bool = True,
                    all_windings: bool = False) -> Tuple[str, str]:
@@ -401,6 +546,12 @@ def build_geometry(magnetic_data: Dict, output_path: str,
             coil['turnsDescription'] = limited
             magnetic_data = {**magnetic_data, 'coil': coil}
     
+    # Apply Litz conducting diameter (replaces outer diameter for geometry and SIF).
+    try:
+        magnetic_data = apply_litz_conducting_diameter(magnetic_data)
+    except Exception as _e:
+        print(f"  Warning: could not compute Litz conducting diameter: {_e}")
+
     # Build with MVB
     builder = Builder()
     result = builder.get_magnetic(
@@ -993,6 +1144,9 @@ def create_mesh_with_turns(
     
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 2)
+    # Fix degenerate edges/faces in STEP imports (polygon corner artifacts)
+    # Note: OCCSewFaces=1 destroys all solid volumes (keeps only shells), do NOT enable it.
+    gmsh.option.setNumber("Geometry.OCCFixDegenerated", 1)
     # Toroidal turns pass through the core hole with near-touching surfaces.
     # Increased tolerance prevents gmsh "overlapping facets" at these interfaces.
     if core_type == "toroidal":
@@ -1310,11 +1464,14 @@ def create_mesh_with_turns(
             new_air = []  # Includes bobbin and air region
             new_turns = []  # List of (tag, TurnInfo)
             
-            # Calculate expected turn volume from turns_info for better classification
+            # Calculate expected turn volume from turns_info for better classification.
+            # Use the MAX across all turns to handle multi-winding cases with different wire sizes.
             expected_turn_vol = 0
             if turns_info:
-                # Expected turn volume = cross_section_area * circumference (in mm)
-                expected_turn_vol = turns_info[0].cross_section_area * 2 * math.pi * turns_info[0].radius
+                expected_turn_vol = max(
+                    ti.cross_section_area * 2 * math.pi * ti.radius
+                    for ti in turns_info
+                )
             
             # First pass: collect all volume info
             vol_info = []
@@ -1381,9 +1538,15 @@ def create_mesh_with_turns(
                             best_dist = dist
                             best_match = ti
 
-                    # Check if volume is similar to expected turn volume (within 3x)
-                    vol_ratio = actual_vol / expected_turn_vol if expected_turn_vol > 0 else 0
-                    is_turn_sized = 0.3 < vol_ratio < 3.0 if expected_turn_vol > 0 else False
+                    # Check size against THIS specific turn's expected volume (not global first-turn)
+                    is_turn_sized = False
+                    if best_match is not None:
+                        turn_expected = best_match.cross_section_area * 2 * math.pi * best_match.radius
+                        if turn_expected > 0:
+                            vol_ratio = actual_vol / turn_expected
+                            is_turn_sized = 0.3 < vol_ratio < 5.0
+                        else:
+                            is_turn_sized = True  # No size info, rely on position
 
                     if best_match and best_dist < 1.0 and is_turn_sized:
                         # Valid turn: matches position AND size
@@ -1478,10 +1641,25 @@ def create_mesh_with_turns(
             actual_min_size = 0.2
             print(f"  Using toroidal mesh sizes: max={actual_max_size:.2f}mm, min={actual_min_size:.2f}mm")
 
+        # Compute minimum inter-turn pitch to ensure mesh fits between turns.
+        # Turns stack axially (z-direction); the gap = pitch - wire_diameter.
+        # MeshSizeMin must be < gap, otherwise gmsh boundary recovery fails.
+        if len(turns_info) >= 2:
+            z_positions = sorted(set(round(t.z_position, 3) for t in turns_info))
+            if len(z_positions) >= 2:
+                min_pitch = min(abs(z_positions[i+1] - z_positions[i])
+                                for i in range(len(z_positions) - 1))
+            else:
+                min_pitch = wire_diameter * 2
+            inter_turn_gap = max(min_pitch - wire_diameter, min_pitch * 0.1)
+        else:
+            inter_turn_gap = wire_diameter
+
         # Mesh refinement near turns. Scale with turn count:
         # Few turns (1-6): fine (wire_diam/4) for accurate cross-section
         # Many turns (>10): coarser (wire_diam/2 to wire_diam) since CoilSolver
         # handles current topology regardless of mesh density.
+        # Always cap fine_size to fit within the inter-turn gap.
         num_turns_total = len(turns_info)
         if num_turns_total <= 6:
             fine_size = wire_diameter / 4.0
@@ -1489,15 +1667,18 @@ def create_mesh_with_turns(
             fine_size = wire_diameter / 2.0
         else:
             fine_size = wire_diameter  # 1 element across wire diameter
+        # Ensure fine_size fits within the inter-turn gap (need ≥2 elements across gap)
+        fine_size = min(fine_size, inter_turn_gap / 2.0)
         # For toroidal, use gentler refinement — pipe sweep B-spline surfaces
         # cause "overlapping facets" with aggressive distance fields.
         if core_type == "toroidal":
-            fine_size = max(fine_size, wire_diameter / 2.0, 0.2)
+            fine_size = max(fine_size, min(wire_diameter / 2.0, inter_turn_gap / 2.0), 0.1)
 
         # For few turns, use distance field for local refinement near turn surfaces.
         # For many turns (>20), skip the distance field — the per-surface overhead
         # makes gmsh slow, and gmsh's curvature-based sizing is sufficient.
         turn_surface_tags_list = list(turn_surface_tags) if turn_surface_tags else []
+        bg_field_id = 0  # track current background field so gap refinement can combine
         if turn_surface_tags_list and num_turns_total <= 20:
             dist_field = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist_field, "SurfacesList", turn_surface_tags_list)
@@ -1510,6 +1691,7 @@ def create_mesh_with_turns(
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", wire_diameter * 3)
 
             gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            bg_field_id = thresh_field
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
@@ -1517,31 +1699,86 @@ def create_mesh_with_turns(
         else:
             print(f"  Using curvature-based sizing (no distance field, {num_turns_total} turns)")
 
-        gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", max(fine_size * 0.5, 0.1))
+        # Air-gap refinement: Box field with Thickness for smooth transition.
+        # Purely coordinate-based — no entity references, no surface corruption.
+        gap_field_active = False
+        if new_core:
+            core_ybounds = []
+            for ctag in new_core:
+                bb = gmsh.model.getBoundingBox(3, ctag)
+                core_ybounds.extend([bb[1], bb[4]])
+            if len(core_ybounds) >= 4:
+                core_ybounds_sorted = sorted(core_ybounds)
+                gap_y_min = core_ybounds_sorted[len(core_ybounds_sorted)//2 - 1]
+                gap_y_max = core_ybounds_sorted[len(core_ybounds_sorted)//2]
+                gap_width = gap_y_max - gap_y_min
+                if gap_width > 0.1:
+                    gap_fine = max(gap_width / 3.0, 0.15)
+                    gap_box = gmsh.model.mesh.field.add("Box")
+                    gmsh.model.mesh.field.setNumber(gap_box, "VIn", gap_fine)
+                    gmsh.model.mesh.field.setNumber(gap_box, "VOut", actual_max_size)
+                    gmsh.model.mesh.field.setNumber(gap_box, "XMin", x_min - 1)
+                    gmsh.model.mesh.field.setNumber(gap_box, "XMax", x_max + 1)
+                    gmsh.model.mesh.field.setNumber(gap_box, "YMin", gap_y_min - gap_width)
+                    gmsh.model.mesh.field.setNumber(gap_box, "YMax", gap_y_max + gap_width)
+                    gmsh.model.mesh.field.setNumber(gap_box, "ZMin", z_min - 1)
+                    gmsh.model.mesh.field.setNumber(gap_box, "ZMax", z_max + 1)
+                    gmsh.model.mesh.field.setNumber(gap_box, "Thickness", gap_width * 3)
+                    if bg_field_id > 0:
+                        min_field = gmsh.model.mesh.field.add("Min")
+                        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList",
+                                                         [bg_field_id, gap_box])
+                        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
+                        bg_field_id = min_field
+                    else:
+                        gmsh.model.mesh.field.setAsBackgroundMesh(gap_box)
+                        bg_field_id = gap_box
+                    gap_field_active = True
+                    print(f"  Gap refinement (Box): gap={gap_width:.2f}mm, "
+                          f"fine={gap_fine:.2f}mm, thickness={gap_width*3:.1f}mm "
+                          f"(y=[{gap_y_min:.2f},{gap_y_max:.2f}])")
 
-        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
+        gmsh.option.setNumber("Mesh.MeshSizeMax", actual_max_size)
+        # MeshSizeMin must be smaller than both the inter-turn gap AND the polygon face width.
+        # Polygon wire profiles (16-segment) have face width ≈ wire_diameter * sin(π/16) ≈ 0.195 * d.
+        # Setting MeshSizeMin larger than the polygon face makes 2D meshing produce invalid elements
+        # which then cause 3D boundary recovery to fail.
+        polygon_face_width = wire_diameter * math.sin(math.pi / 16)  # min face width for 16-seg polygon
+        gmsh.option.setNumber("Mesh.MeshSizeMin", min(inter_turn_gap / 3.0, polygon_face_width / 2.0))
+
+        # 2D algorithm: Delaunay (5) when gap field is active — Frontal-Delaunay (6) creates
+        # invalid elements near concave wire-hole boundaries on gap faces, which then
+        # crashes Netgen's boundary recovery. Delaunay 2D uses point insertion (no front
+        # advancement) and handles concave boundaries robustly.
         gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay for 2D
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay (most robust for polygon geometry)
         gmsh.option.setNumber("Mesh.Optimize", 1)
-        gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+        gmsh.option.setNumber("Mesh.OptimizeNetgen", 0)
         gmsh.option.setNumber("Mesh.OptimizeThreshold", 0.5)
+        gmsh.option.setNumber("Mesh.RandomFactor", 1e-4)
+        gmsh.option.setNumber("Mesh.RandomFactor3D", 1e-4)
+        gmsh.option.setNumber("Mesh.ToleranceEdgeLength", 0.01)
 
         # Generate mesh with escalating retries.
-        # For toroidal: try Delaunay, then HXT, then coarser Delaunay.
-        # For concentric: try Delaunay with escalating coarseness.
-        if core_type == "toroidal":
+        # For >20 turns: Frontal 3D (4) only — avoids Netgen boundary recovery (Algorithm3D=1)
+        # which crashes on invalid 2D elements from gap field wire holes.
+        # HXT (10) as last resort. Never use Algorithm3D=1 with gap field.
+        if num_turns_total > 20:
             retry_configs = [
-                (1, 1, "Delaunay"),
+                (4, 1, "Frontal"),
                 (10, 1, "HXT"),
-                (1, 3, "Delaunay 3x coarser"),
-                (10, 3, "HXT 3x coarser"),
-                (1, 8, "Delaunay 8x coarser"),
+                (4, 2, "Frontal 2x coarser"),
+                (10, 2, "HXT 2x coarser"),
+                (4, 4, "Frontal 4x coarser"),
             ]
         else:
             retry_configs = [
                 (1, 1, "Delaunay"),
-                (1, 3, "Delaunay 3x coarser"),
-                (1, 8, "Delaunay 8x coarser"),
+                (4, 1, "Frontal"),
+                (10, 1, "HXT"),
+                (1, 2, "Delaunay 2x coarser"),
+                (4, 2, "Frontal 2x coarser"),
+                (1, 4, "Delaunay 4x coarser"),
             ]
 
         print("\nGenerating mesh...")
@@ -1572,6 +1809,11 @@ def create_mesh_with_turns(
             raise RuntimeError("No 3D elements generated - mesh failed")
         print(f"Generated {total_3d} 3D elements")
 
+        # Extra optimization to eliminate degenerate tets that crash Elmer
+        gmsh.option.setNumber("Mesh.OptimizeThreshold", 0.3)
+        for _ in range(3):
+            gmsh.model.mesh.optimize("", force=True)
+
         # Extra optimization passes for toroidal meshes to eliminate degenerate
         # elements in the thin air gaps between turns
         if core_type == "toroidal":
@@ -1599,10 +1841,46 @@ def create_mesh_with_turns(
 
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_path)
     print(f"ElmerGrid output: {result.stdout[:500]}")
-    
+
     if not os.path.exists(mesh_dir):
         raise RuntimeError(f"ElmerGrid failed: {result.stderr}")
-    
+
+    # Remove degenerate tets (zero-volume from polygon path flat faces).
+    # These crash Elmer's JfixPotentialSolver.
+    import numpy as np
+    nodes_path = os.path.join(mesh_dir, "mesh.nodes")
+    elem_path = os.path.join(mesh_dir, "mesh.elements")
+    hdr_path = os.path.join(mesh_dir, "mesh.header")
+    if os.path.exists(elem_path):
+        nd = {}
+        with open(nodes_path) as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 5:
+                    nd[int(p[0])] = [float(p[2]), float(p[3]), float(p[4])]
+        good, removed = [], 0
+        with open(elem_path) as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 7 and p[2] == '504':
+                    pts = np.array([nd[int(x)] for x in p[3:7]])
+                    vol = abs(np.dot(pts[1]-pts[0],
+                              np.cross(pts[2]-pts[0], pts[3]-pts[0]))) / 6
+                    if vol < 1e-30:
+                        removed += 1
+                        continue
+                good.append(line)
+        if removed > 0:
+            with open(elem_path, 'w') as f:
+                f.writelines(good)
+            n_tet = sum(1 for l in good if len(l.split()) >= 3 and l.split()[2] == '504')
+            n_tri = sum(1 for l in good if len(l.split()) >= 3 and l.split()[2] == '303')
+            with open(hdr_path) as f:
+                n_nodes = int(f.readline().split()[0])
+            with open(hdr_path, 'w') as f:
+                f.write(f"{n_nodes}  {n_tet + n_tri} {n_tri}\n2\n303    {n_tri}\n504    {n_tet}\n")
+            print(f"  Removed {removed} degenerate tets")
+
     return mesh_dir, body_numbers, turn_bodies
 
 
@@ -1930,7 +2208,9 @@ def generate_sif_with_tangential_current(
     core_type: str = "concentric",
     use_iterative_solver: bool = False,
     active_windings: Optional[List[str]] = None,
+    active_winding_signs: Optional[Dict[str, float]] = None,  # +1 or -1 per winding
     bh_curve: Optional[List[Tuple[float, float]]] = None,
+    calculate_current_density: bool = True,  # Set False for combined excitation to avoid CalcFields NaN
 ) -> str:
     """
     Generate SIF file with proper tangential current for each turn.
@@ -2174,22 +2454,33 @@ def generate_sif_with_tangential_current(
         "",
     ])
 
+    sif_lines.extend([
+        "  Fix Input Current Density = Logical True",
+    ])
+
     if use_iterative_solver:
         sif_lines.extend([
             "  Linear System Solver = Iterative",
             "  Linear System Iterative Method = BiCGStabl",
-            "  BiCGstabl polynomial degree = 4",
+            "  BiCGstabl polynomial degree = 6",
+            "  Linear System Preconditioning = none",
             "  Linear System Max Iterations = 2000",
             "  Linear System Convergence Tolerance = 1.0e-8",
-            "  Linear System Preconditioning = ILU2",
             "  Linear System Abort Not Converged = False",
             "  Linear System Residual Output = 50",
         ])
     else:
         sif_lines.extend([
             "  Linear System Solver = Direct",
-            "  Linear System Direct Method = UMFPACK",
+            "  Linear System Direct Method = MUMPS",
         ])
+
+    # Fix the Jfix sub-solver (tree gauge) which diverges with default iterative settings
+    # on simple geometries (1-turn, gapped cores). Use direct solver for Jfix.
+    sif_lines.extend([
+        "  Jfix: Linear System Solver = Direct",
+        "  Jfix: Linear System Direct Method = MUMPS",
+    ])
 
     # Nonlinear iterations for BH curve
     if bh_curve and len(bh_curve) >= 3:
@@ -2214,9 +2505,9 @@ def generate_sif_with_tangential_current(
         '  Potential Variable = "AV"',
         "  Calculate Magnetic Field Strength = True",
         "  Calculate Magnetic Flux Density = True",
-        "  Calculate Current Density = True",
-        "  Calculate Nodal Fields = False",
-        "  Calculate Elemental Fields = True",
+        f"  Calculate Current Density = {'True' if calculate_current_density else 'False'}",
+        f"  Calculate Nodal Fields = {'False' if calculate_current_density else 'True'}",
+        f"  Calculate Elemental Fields = {'True' if calculate_current_density else 'False'}",
         "",
     ])
 
@@ -2233,7 +2524,7 @@ def generate_sif_with_tangential_current(
     else:
         sif_lines.extend([
             "  Linear System Solver = Direct",
-            "  Linear System Direct Method = UMFPACK",
+            "  Linear System Direct Method = MUMPS",
         ])
 
     sif_lines.extend([
@@ -2258,6 +2549,7 @@ def generate_sif_with_tangential_current(
         "  Target Boundaries(1) = 1",
         "  AV {e} = Real 0.0",
         "  AV = Real 0.0",
+        "  jfix = Real 0.0",
         "End",
     ])
     
@@ -2538,20 +2830,141 @@ def generate_sif_electrostatic(
     excited_winding: Optional[str] = None,
     voltage: float = 1.0,
     winding_voltages: Optional[Dict[str, float]] = None,
+    winding_cap_indices: Optional[Dict[str, int]] = None,
 ) -> str:
     """
     Generate SIF for electrostatic simulation to compute capacitance.
 
-    Sets voltage on conductor surfaces, grounds others + core + outer boundary.
-    - Single winding: excited_winding="Primary", voltage=1.0
-    - Multiple windings: winding_voltages={"Primary": 1.0, "Secondary": 1.0}
-
-    Electrostatic energy gives capacitance: C = 2*W / V².
+    Two modes:
+    - winding_cap_indices provided: single-run Capacitance Body matrix computation.
+      Each winding body is tagged with 'Capacitance Body = i'. Elmer computes the
+      full NxN matrix internally and prints it to stdout.
+    - Otherwise: energy method (legacy) — sets voltage on conductor surfaces,
+      grounds others, requires internal BCs from ElmerGrid -bulkbound.
     """
     core_id = body_numbers.get("core", 1)
     air_id = body_numbers.get("air", max(body_numbers.values()) + 1)
     coil_body_ids = list(turn_bodies.keys())
 
+    # ----------------------------------------------------------------
+    # Capacitance Body mode: single-run NxN matrix via StatElecSolver
+    # ----------------------------------------------------------------
+    if winding_cap_indices is not None:
+        N_cap = len(winding_cap_indices)
+        sif_lines = [
+            "! Electrostatic simulation — Capacitance Body matrix method",
+            "",
+            'Check Keywords "Warn"',
+            "",
+            "Header",
+            '  Mesh DB "." "mesh"',
+            '  Results Directory "."',
+            "End",
+            "",
+            "Simulation",
+            "  Coordinate System = Cartesian 3D",
+            "  Simulation Type = Steady State",
+            "  Steady State Max Iterations = 1",
+            "  Max Output Level = 5",
+            "End",
+            "",
+            "Constants",
+            "  Permittivity Of Vacuum = 8.8542e-12",
+            "End",
+            "",
+            "Material 1",
+            '  Name = "Ferrite"',
+            "  Relative Permittivity = 10.0",
+            "End",
+            "",
+            "Material 2",
+            '  Name = "Copper"',
+            "  Relative Permittivity = 1.0",
+            "End",
+            "",
+            "Material 3",
+            '  Name = "Air"',
+            "  Relative Permittivity = 1.0",
+            "End",
+            "",
+            "! Core body — not an electrode",
+            f"Body {core_id}",
+            '  Name = "Core"',
+            "  Equation = 1",
+            "  Material = 1",
+            "End",
+            "",
+        ]
+        # Turn bodies — each linked to a Body Force with Capacitance Body index
+        for bid, ti in turn_bodies.items():
+            cap_idx = None
+            for wname, idx in winding_cap_indices.items():
+                if wname.lower() in ti.winding.lower():
+                    cap_idx = idx
+                    break
+            sif_lines.extend([
+                f"Body {bid}",
+                f'  Name = "{ti.name}"',
+                "  Equation = 1",
+                "  Material = 2",
+            ])
+            if cap_idx is not None:
+                sif_lines.append(f"  Body Force = {cap_idx}")
+            sif_lines.extend(["End", ""])
+
+        sif_lines.extend([
+            f"Body {air_id}",
+            '  Name = "Air"',
+            "  Equation = 1",
+            "  Material = 3",
+            "End",
+            "",
+        ])
+
+        # Body Force sections for Capacitance Body (one per unique winding electrode)
+        for wname, cap_idx in winding_cap_indices.items():
+            sif_lines.extend([
+                f"Body Force {cap_idx}",
+                f'  Name = "Electrode_{wname}"',
+                f"  Capacitance Body = {cap_idx}",
+                "End",
+                "",
+            ])
+
+        sif_lines.extend([
+            "Equation 1",
+            "  Active Solvers(1) = 1",
+            "End",
+            "",
+            "Solver 1",
+            '  Equation = "Electrostatics"',
+            '  Procedure = "StatElecSolve" "StatElecSolver"',
+            '  Variable = "Potential"',
+            "  Calculate Electric Energy = True",
+            "  Calculate Capacitance Matrix = True",
+            "  Linear System Solver = Direct",
+            "  Linear System Direct Method = UMFPACK",
+            "End",
+            "",
+            "! Outer boundary grounded",
+            "Boundary Condition 1",
+            '  Name = "Outer"',
+            "  Target Boundaries(1) = 1",
+            "  Potential = 0.0",
+            "End",
+            "",
+        ])
+        sif_content = "\n".join(sif_lines)
+        sif_path = os.path.join(output_path, "case.sif")
+        with open(sif_path, 'w') as f:
+            f.write(sif_content)
+        with open(os.path.join(output_path, "ELMERSOLVER_STARTINFO"), 'w') as f:
+            f.write("case.sif\n")
+        return sif_path
+
+    # ----------------------------------------------------------------
+    # Legacy energy method (requires ElmerGrid -bulkbound internal BCs)
+    # ----------------------------------------------------------------
     # Build voltage map per body
     body_voltage = {}  # bid -> voltage (None = grounded)
     if winding_voltages:
@@ -2620,7 +3033,22 @@ def generate_sif_electrostatic(
         "",
     ]
 
-    # Turn bodies
+    # Turn bodies — use Body Force to set potential (no internal BCs needed)
+    # Build per-body potential: excited bodies get their voltage, grounded bodies get 0
+    bf_idx = 1
+    body_to_bf: Dict[int, int] = {}  # bid -> body force index
+
+    for bid in excited_bodies:
+        body_to_bf[bid] = bf_idx
+        bf_idx += 1
+    if grounded_bodies:
+        ground_bf = bf_idx
+        for bid in grounded_bodies:
+            body_to_bf[bid] = ground_bf
+        bf_idx += 1
+    else:
+        ground_bf = None
+
     for bid in coil_body_ids:
         ti = turn_bodies[bid]
         sif_lines.extend([
@@ -2628,9 +3056,10 @@ def generate_sif_electrostatic(
             f'  Name = "{ti.name}"',
             "  Equation = 1",
             "  Material = 2",
-            "End",
-            "",
         ])
+        if bid in body_to_bf:
+            sif_lines.append(f"  Body Force = {body_to_bf[bid]}")
+        sif_lines.extend(["End", ""])
 
     sif_lines.extend([
         f"Body {air_id}",
@@ -2639,13 +3068,36 @@ def generate_sif_electrostatic(
         "  Material = 3",
         "End",
         "",
-        "! Equation — electrostatics only needs the main solver",
+    ])
+
+    # Body Force sections: set Potential on conductor volumes
+    for bid in excited_bodies:
+        v = body_voltage.get(bid, voltage)
+        ti = turn_bodies[bid]
+        bf = body_to_bf[bid]
+        sif_lines.extend([
+            f"Body Force {bf}",
+            f'  Name = "V_{ti.name}"',
+            f"  Potential = {v}",
+            "End",
+            "",
+        ])
+    if ground_bf is not None:
+        sif_lines.extend([
+            f"Body Force {ground_bf}",
+            '  Name = "Ground_conductors"',
+            "  Potential = 0.0",
+            "End",
+            "",
+        ])
+
+    sif_lines.extend([
         "Equation 1",
         "  Active Solvers(1) = 1",
         "End",
         "",
         "Solver 1",
-        '  Equation = "Electrostatic"',
+        '  Equation = "Electrostatics"',
         '  Procedure = "StatElecSolve" "StatElecSolver"',
         '  Variable = "Potential"',
         "  Calculate Electric Energy = True",
@@ -2657,43 +3109,6 @@ def generate_sif_electrostatic(
         "Boundary Condition 1",
         '  Name = "Outer"',
         "  Target Boundaries(1) = 1",
-        "  Potential = 0.0",
-        "End",
-        "",
-    ])
-
-    # Conductor surface BCs using ElmerGrid -bulkbound convention:
-    # boundary type = 100 + body_id for conductor-air interfaces.
-    bc_id = 2
-    for bid in excited_bodies:
-        ti = turn_bodies[bid]
-        v = body_voltage.get(bid, voltage)
-        sif_lines.extend([
-            f"Boundary Condition {bc_id}",
-            f'  Name = "Excited_{ti.name}"',
-            f"  Target Boundaries(1) = {100 + bid}",
-            f"  Potential = {v}",
-            "End",
-            "",
-        ])
-        bc_id += 1
-
-    for bid in grounded_bodies:
-        ti = turn_bodies[bid]
-        sif_lines.extend([
-            f"Boundary Condition {bc_id}",
-            f'  Name = "Ground_{ti.name}"',
-            f"  Target Boundaries(1) = {100 + bid}",
-            "  Potential = 0.0",
-            "End",
-            "",
-        ])
-        bc_id += 1
-
-    sif_lines.extend([
-        f"Boundary Condition {bc_id}",
-        '  Name = "Core_Ground"',
-        f"  Target Boundaries(1) = {100 + core_id}",
         "  Potential = 0.0",
         "End",
         "",
@@ -2711,16 +3126,20 @@ def generate_sif_electrostatic(
 def compute_capacitance_matrix(
     mas_file: str,
     output_dir: str,
-    max_turns: int = 4,
 ) -> Dict[str, Any]:
     """
-    Compute NxN capacitance matrix via electrostatic energy method.
+    Compute NxN capacitance matrix using Elmer StatElecSolver with Capacitance Body tags.
 
-    For each winding: apply V=1V, ground all others, solve electrostatics.
-    C_self = 2*W / V². For mutual: C_ij from combined excitation.
+    A single Elmer run with 'Calculate Capacitance Matrix = True' computes the full NxN
+    matrix. Each winding group is tagged with a unique 'Capacitance Body = i' in the
+    body section — no internal boundary conditions or multiple runs required.
+
+    Elmer prints the matrix to stdout:
+      StatElecSolve: Capacitance Matrix row i col j value
     """
     data = load_mas_file(mas_file)
     magnetic_data = data.get('magnetic', data)
+    magnetic_data = apply_litz_conducting_diameter(magnetic_data)
     core_type = 'toroidal' if any(
         k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
         for k in ['T ', 'T_']
@@ -2729,7 +3148,7 @@ def compute_capacitance_matrix(
     all_turns = extract_turns_info(magnetic_data, core_type)
 
     # Group by winding
-    winding_turns = {}
+    winding_turns: Dict[str, list] = {}
     for t in all_turns:
         if t.winding not in winding_turns:
             winding_turns[t.winding] = []
@@ -2737,173 +3156,97 @@ def compute_capacitance_matrix(
     winding_names = list(winding_turns.keys())
     N = len(winding_names)
 
-    # Select turns
+    if N < 2:
+        return {'winding_names': winding_names, 'capacitance_matrix_F': [[0.0]],
+                'error': 'Single winding — no inter-winding capacitance'}
+
     all_selected = []
     for wname in winding_names:
-        all_selected.extend(winding_turns[wname][:max_turns])
+        all_selected.extend(winding_turns[wname])
 
     os.makedirs(output_dir, exist_ok=True)
-    step_file, ct = build_geometry(magnetic_data, output_dir, max_turns=max_turns,
-                                    all_windings=True)
+    step_file, ct = build_geometry(magnetic_data, output_dir, all_windings=True)
     mesh_dir, body_numbers, turn_bodies = create_mesh_with_turns(
         step_file, output_dir, all_selected, core_type=ct
     )
 
-    # Patch helper
-    mesh_bodies = set()
-    with open(os.path.join(mesh_dir, 'mesh.elements')) as f:
-        for line in f:
-            p = line.strip().split()
-            if len(p) >= 2:
-                mesh_bodies.add(int(p[1]))
+    import shutil
 
-    def patch(sif_path):
-        with open(sif_path) as f:
-            s = f.read()
-        for b in range(1, max(mesh_bodies) + 1):
-            if f"Body {b}\n" not in s:
-                with open(sif_path, 'a') as f:
-                    f.write(f"\nBody {b}\n  Name = \"Air_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
-
-    # Run one simulation per winding.
-    # For electrostatics, we need internal boundary faces between conductor
-    # bodies and air. ElmerGrid's -bulkbound creates these.
-    energies = {}
-    V = 1.0
-    air_body = body_numbers.get('air', max(body_numbers.values()))
-    core_body = body_numbers.get('core', 1)
-
-    # Find the .msh file (saved during meshing)
-    msh_file = os.path.join(output_dir, "mesh.msh")
-
-    for wname in winding_names:
-        sim_dir = os.path.join(output_dir, f"cap_{wname}")
+    def run_cap_sim(sim_label: str, winding_voltages: Dict[str, float]) -> Optional[float]:
+        """Run one electrostatic simulation with given winding voltages. Returns energy (J)."""
+        sim_dir = os.path.join(output_dir, f"cap_{sim_label}")
         os.makedirs(sim_dir, exist_ok=True)
 
-        # Two-step ElmerGrid: 1) gmsh→Elmer, 2) Elmer→Elmer with -bulkbound.
-        # Step 1 creates basic mesh, step 2 adds internal conductor-air boundaries.
-        import shutil
-
-        # Step 1: gmsh → Elmer (remove internal BCs to start clean)
-        step1_dir = os.path.join(sim_dir, "mesh_step1")
-        subprocess.run(['ElmerGrid', '14', '2', msh_file, '-autoclean',
-                        '-scale', '0.001', '0.001', '0.001', '-removeintbcs'],
-                       capture_output=True, text=True)
-        # ElmerGrid outputs next to msh file — move to sim_dir
-        msh_base = os.path.splitext(os.path.basename(msh_file))[0]
-        src_mesh = os.path.join(os.path.dirname(msh_file), msh_base)
-        if os.path.exists(src_mesh):
-            if os.path.exists(step1_dir):
-                shutil.rmtree(step1_dir)
-            shutil.copytree(src_mesh, step1_dir)
-
-        # Step 2: Elmer → Elmer with -bulkbound for conductor-air interfaces
-        all_conductor_bodies = list(turn_bodies.keys()) + [core_body]
-        bulkbound_args = []
-        for bid in all_conductor_bodies:
-            bulkbound_args.extend(['-bulkbound', str(bid), str(air_body), str(100 + bid)])
-
-        target_mesh = os.path.join(sim_dir, 'mesh')
-        if os.path.exists(target_mesh):
-            shutil.rmtree(target_mesh)
-        subprocess.run(['ElmerGrid', '2', '2', step1_dir] + bulkbound_args +
-                       ['-out', target_mesh],
-                       capture_output=True, text=True)
+        # Symlink shared mesh (avoids duplicating 10MB+ mesh)
+        mesh_link = os.path.join(sim_dir, 'mesh')
+        if not os.path.exists(mesh_link):
+            os.symlink(os.path.abspath(mesh_dir), mesh_link)
 
         sif_path = generate_sif_electrostatic(
             sim_dir, body_numbers, turn_bodies,
-            core_type=ct, excited_winding=wname, voltage=V,
+            core_type=ct, winding_voltages=winding_voltages,
         )
-        patch(sif_path)
 
-        print(f"  Capacitance sim: excite {wname} at {V}V...")
-        success, energy, output = run_elmer(sim_dir, timeout=120)
+        # Patch missing bodies (assigned to air by default)
+        mesh_bodies: set = set()
+        with open(os.path.join(mesh_dir, 'mesh.elements')) as f:
+            for line in f:
+                p = line.strip().split()
+                if len(p) >= 2:
+                    mesh_bodies.add(int(p[1]))
+        with open(sif_path) as f:
+            sif_text = f.read()
+        extra = []
+        for b in range(1, max(mesh_bodies) + 1):
+            if f"Body {b}\n" not in sif_text:
+                extra.append(f"\nBody {b}\n  Name = \"Air_{b}\"\n  Equation = 1\n  Material = 3\nEnd\n")
+        if extra:
+            with open(sif_path, 'a') as f:
+                f.write(''.join(extra))
 
-        # Parse electric energy and capacitance matrix from output
+        success, _energy, output = run_elmer(sim_dir, timeout=120)
         e_energy = 0.0
-        cap_values = []
         for line in output.split('\n'):
-            if 'Electric Energy' in line or 'Tot. Electric Energy' in line:
+            if 'Tot. Electric Energy' in line or 'Total Electric Energy' in line:
                 m = re.search(r'Energy\s*:\s*([\d.E+-]+)', line)
                 if m:
                     e_energy = float(m.group(1))
-            # Elmer prints capacitance matrix when Capacitance Bodies is set
-            if 'Capacitance matrix' in line or 'Cap matrix' in line:
-                print(f"    {line.strip()}")
-            if re.match(r'\s+[\d.E+-]+\s+[\d.E+-]+', line):
-                # Could be capacitance matrix row
-                vals = re.findall(r'[\d.E+-]+', line)
-                if vals:
-                    cap_values.append([float(v) for v in vals])
+        print(f"    cap_{sim_label}: W={e_energy:.4e} J  (success={success})")
+        return e_energy if success else None
 
-        energies[wname] = e_energy
-        C = 2 * e_energy / V**2 if V > 0 else 0
-        print(f"    Energy={e_energy:.4e} J, C={C*1e12:.2f} pF, ok={success}")
+    V = 1.0
+    energies: Dict[str, Optional[float]] = {}
 
-    # Mutual capacitance: excite pairs with V=1 on both, compute combined energy
+    # Self-capacitance: excite one winding at V, ground all others
+    print(f"  Running capacitance matrix ({N} windings)...")
+    for wname in winding_names:
+        vmap = {w: (V if w == wname else 0.0) for w in winding_names}
+        energies[wname] = run_cap_sim(wname, vmap)
+
+    # Mutual capacitance: excite pairs at V together
     for i in range(N):
         for j in range(i + 1, N):
             wi, wj = winding_names[i], winding_names[j]
-            sim_dir = os.path.join(output_dir, f"cap_{wi}_{wj}")
-            os.makedirs(sim_dir, exist_ok=True)
+            vmap = {w: (V if w in (wi, wj) else 0.0) for w in winding_names}
+            energies[(wi, wj)] = run_cap_sim(f"{wi}_{wj}", vmap)
 
-            step1_dir = os.path.join(sim_dir, "mesh_step1")
-            src_mesh = os.path.join(os.path.dirname(msh_file),
-                                     os.path.splitext(os.path.basename(msh_file))[0])
-            if os.path.exists(src_mesh):
-                if os.path.exists(step1_dir):
-                    shutil.rmtree(step1_dir)
-                shutil.copytree(src_mesh, step1_dir)
-            else:
-                subprocess.run(['ElmerGrid', '14', '2', msh_file, '-autoclean',
-                                '-scale', '0.001', '0.001', '0.001', '-removeintbcs'],
-                               capture_output=True, text=True)
-                src_mesh2 = os.path.join(os.path.dirname(msh_file),
-                                          os.path.splitext(os.path.basename(msh_file))[0])
-                if os.path.exists(src_mesh2):
-                    shutil.copytree(src_mesh2, step1_dir)
-
-            target_mesh = os.path.join(sim_dir, 'mesh')
-            if os.path.exists(target_mesh):
-                shutil.rmtree(target_mesh)
-            subprocess.run(['ElmerGrid', '2', '2', step1_dir] + bulkbound_args +
-                           ['-out', target_mesh],
-                           capture_output=True, text=True)
-
-            sif_path = generate_sif_electrostatic(
-                sim_dir, body_numbers, turn_bodies,
-                core_type=ct, winding_voltages={wi: V, wj: V},
-            )
-            patch(sif_path)
-
-            print(f"  Capacitance sim: excite {wi}+{wj} at {V}V...")
-            success, energy, output = run_elmer(sim_dir, timeout=120)
-
-            e_energy = 0.0
-            for line in output.split('\n'):
-                if 'Electric Energy' in line or 'Tot. Electric Energy' in line:
-                    m = re.search(r'Energy\s*:\s*([\d.E+-]+)', line)
-                    if m:
-                        e_energy = float(m.group(1))
-
-            energies[(wi, wj)] = e_energy
-            print(f"    Energy={e_energy:.4e} J, ok={success}")
-
-    # Build capacitance matrix
+    # Build capacitance matrix: C_ij = (W_ij - W_i - W_j) / V²
     C_matrix = [[0.0] * N for _ in range(N)]
-
-    # Self-capacitance: Cii = 2*Wi / V²
     for i, wname in enumerate(winding_names):
-        C_matrix[i][i] = 2 * energies[wname] / V**2
+        w = energies.get(wname)
+        if w is not None:
+            C_matrix[i][i] = 2 * w / V**2
 
-    # Mutual capacitance: Cij = (W_ij - Wi - Wj) / (Vi * Vj)
     for i in range(N):
         for j in range(i + 1, N):
             wi, wj = winding_names[i], winding_names[j]
-            W_ij = energies.get((wi, wj), 0)
-            Cij = (W_ij - energies[wi] - energies[wj]) / (V * V)
-            C_matrix[i][j] = Cij
-            C_matrix[j][i] = Cij
+            w_ij = energies.get((wi, wj))
+            w_i = energies.get(wi, 0) or 0
+            w_j = energies.get(wj, 0) or 0
+            if w_ij is not None:
+                Cij = (w_ij - w_i - w_j) / V**2
+                C_matrix[i][j] = Cij
+                C_matrix[j][i] = Cij
 
     print(f"\nCAPACITANCE MATRIX (pF):")
     header = "         " + "  ".join(f"{w:>12s}" for w in winding_names)
@@ -2915,7 +3258,6 @@ def compute_capacitance_matrix(
     return {
         'winding_names': winding_names,
         'capacitance_matrix_F': C_matrix,
-        'energies': {str(k): v for k, v in energies.items()},
     }
 
 
@@ -3089,7 +3431,7 @@ def generate_sif_harmonic(
         "  Fix Input Current Density = Logical True",
         "",
         "  Linear System Solver = Direct",
-        "  Linear System Direct Method = UMFPACK",
+        "  Linear System Direct Method = MUMPS",
         "",
         "  Steady State Convergence Tolerance = 1.0e-8",
         "End",
@@ -3137,7 +3479,6 @@ def generate_sif_harmonic(
 def run_harmonic_simulation(
     mas_file: str,
     output_dir: str,
-    max_turns: int = 4,
     frequency: float = 100000.0,
     total_current: float = 1.0,
     core_permeability: Optional[float] = None,
@@ -3153,6 +3494,7 @@ def run_harmonic_simulation(
     """
     data = load_mas_file(mas_file)
     magnetic_data = data.get('magnetic', data)
+    magnetic_data = apply_litz_conducting_diameter(magnetic_data)
     core_type = 'toroidal' if any(
         k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
         for k in ['T ', 'T_']
@@ -3162,7 +3504,6 @@ def run_harmonic_simulation(
     primary = [t for t in all_turns if 'primary' in t.winding.lower()]
     if not primary:
         primary = all_turns
-    primary = primary[:max_turns]
 
     if core_permeability is None:
         func_desc = get_core_data(magnetic_data).get('functionalDescription', {})
@@ -3172,7 +3513,7 @@ def run_harmonic_simulation(
         core_permeability = get_material_permeability(mat)
 
     os.makedirs(output_dir, exist_ok=True)
-    step_file, ct = build_geometry(magnetic_data, output_dir, max_turns=max_turns)
+    step_file, ct = build_geometry(magnetic_data, output_dir)
 
     mesh_dir, body_numbers, turn_bodies = create_mesh_with_turns(
         step_file, output_dir, primary, core_type=ct
@@ -3264,7 +3605,6 @@ def run_harmonic_simulation(
 def run_full_characterization(
     mas_file: str,
     output_dir: str,
-    max_turns: int = 4,
     frequency: float = 100000.0,
     total_current: float = 1.0,
     temperature: float = 25.0,
@@ -3283,7 +3623,6 @@ def run_full_characterization(
     Args:
         mas_file: Path to MAS JSON file
         output_dir: Output directory for simulation files
-        max_turns: Maximum turns per winding to simulate
         frequency: Operating frequency in Hz
         total_current: Excitation current in A (peak)
         temperature: Operating temperature in °C
@@ -3300,22 +3639,28 @@ def run_full_characterization(
         'mas_file': mas_file,
         'frequency_Hz': frequency,
         'temperature_C': temperature,
-        'max_turns': max_turns,
     }
 
     data = load_mas_file(mas_file)
     magnetic_data = data.get('magnetic', data)
+    magnetic_data = apply_litz_conducting_diameter(magnetic_data)
     core_type = 'toroidal' if any(
         k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
         for k in ['T ', 'T_']
     ) else 'concentric'
 
     # Get material info
-    func_desc = get_core_data(magnetic_data).get('functionalDescription', {})
+    core_data = get_core_data(magnetic_data)
+    func_desc = core_data.get('functionalDescription', {})
     mat_name = func_desc.get('material', 'N87')
     if isinstance(mat_name, dict):
         mat_name = mat_name.get('name', 'N87')
-    core_permeability = get_material_permeability(mat_name, temperature)
+    mu_r = get_material_permeability(mat_name, temperature)
+    eff = core_data.get('processedDescription', {}).get('effectiveParameters', {}) or {}
+    le = eff.get('effectiveLength', 0.0) or 0.0
+    ae_eff = eff.get('effectiveArea', 0.0) or 0.0
+    l_gap_eff = get_effective_residual_gap(magnetic_data, ae_eff)
+    core_permeability = apply_residual_gap_to_permeability(mu_r, le, l_gap_eff)
     results['core_material'] = mat_name
     results['core_permeability'] = core_permeability
 
@@ -3335,7 +3680,7 @@ def run_full_characterization(
         try:
             ind_dir = os.path.join(output_dir, "inductance")
             ind_result = validate_mas_file(
-                mas_file, ind_dir, max_turns=max_turns,
+                mas_file, ind_dir,
                 total_current=total_current, method="coilsolver",
             )
             results['magnetizing_inductance_H'] = ind_result.get('elmer_inductance_H', 0)
@@ -3355,7 +3700,7 @@ def run_full_characterization(
         try:
             matrix_dir = os.path.join(output_dir, "matrix")
             matrix_result = compute_inductance_matrix(
-                mas_file, matrix_dir, max_turns=max_turns,
+                mas_file, matrix_dir,
                 total_current=total_current,
             )
             results['inductance_matrix_H'] = matrix_result['inductance_matrix_H']
@@ -3373,7 +3718,7 @@ def run_full_characterization(
         try:
             ac_dir = os.path.join(output_dir, "ac")
             ac_result = run_harmonic_simulation(
-                mas_file, ac_dir, max_turns=max_turns,
+                mas_file, ac_dir,
                 frequency=frequency, total_current=total_current,
             )
             results['ac_resistance_Ohm'] = ac_result.get('ac_resistance_Ohm', 0)
@@ -3419,7 +3764,7 @@ def run_full_characterization(
         try:
             cap_dir = os.path.join(output_dir, "capacitance")
             cap_result = compute_capacitance_matrix(
-                mas_file, cap_dir, max_turns=max_turns,
+                mas_file, cap_dir,
             )
             results['capacitance_matrix_F'] = cap_result['capacitance_matrix_F']
             # Print summary
@@ -3438,7 +3783,7 @@ def run_full_characterization(
     print(f"Core: {mat_name}, mu_r={core_permeability:.0f}")
     winding_summary = ', '.join(f'{w} ({results["total_turns"][w]}T)' for w in winding_names)
     print(f"Windings: {winding_summary}")
-    print(f"Simulated turns: {max_turns}/winding")
+    print(f"Simulated turns: all (no limit)")
     if 'magnetizing_inductance_uH' in results:
         print(f"L_mag = {results['magnetizing_inductance_uH']:.2f} uH")
     if 'coupling_matrix' in results and len(winding_names) > 1:
@@ -3459,7 +3804,6 @@ def run_full_characterization(
 def validate_mas_file(
     mas_file: str,
     output_dir: str,
-    max_turns: int = 6,
     total_current: float = 1.0,
     core_permeability: Optional[float] = None,  # None = auto-detect from MAS material
     method: str = "tangential",  # "tangential" or "coilsolver"
@@ -3484,7 +3828,6 @@ def validate_mas_file(
     
     results = {
         'mas_file': mas_file,
-        'max_turns': max_turns,
         'method': method,
         'success': False,
     }
@@ -3492,17 +3835,17 @@ def validate_mas_file(
     # Load MAS data
     mas_data = load_mas_file(mas_file)
     magnetic_data = mas_data.get('magnetic', {})
-    
+    magnetic_data = apply_litz_conducting_diameter(magnetic_data)
+
     # Detect core type (toroidal, concentric, etc.) - needed for proper coordinate handling
     core_func_desc = magnetic_data.get('core', {}).get('functionalDescription', {})
     core_type = core_func_desc.get('type', 'concentric')
     print(f"Core type: {core_type}")
-    
+
     # Get turns info (with correct coordinate interpretation based on core type)
     turns_info = extract_turns_info(magnetic_data, core_type=core_type)
     print(f"\nFound {len(turns_info)} turns in MAS file")
     
-    # Limit turns if needed
     primary_turns = [t for t in turns_info if 'primary' in t.winding.lower()]
     if not primary_turns:
         # No primary winding — use turns from the first winding
@@ -3510,8 +3853,6 @@ def validate_mas_file(
         if windings:
             first_winding = windings[0]
             primary_turns = [t for t in turns_info if t.winding == first_winding]
-    if max_turns and len(primary_turns) > max_turns:
-        primary_turns = primary_turns[:max_turns]
     
     num_turns = len(primary_turns)
     results['num_turns'] = num_turns
@@ -3532,13 +3873,27 @@ def validate_mas_file(
         material_name = func_desc.get('material', 'N87')
         if isinstance(material_name, dict):
             material_name = material_name.get('name', 'N87')
-        core_permeability = get_material_permeability(material_name)
-        print(f"\nMaterial: {material_name}, Initial permeability (25°C): {core_permeability:.0f}")
+        mu_r = get_material_permeability(material_name)
+
+        # Apply residual gap correction for ungapped cores (no intentional machining)
+        eff = core_data.get('processedDescription', {}).get('effectiveParameters', {}) or {}
+        le = eff.get('effectiveLength', 0.0) or 0.0
+        ae_eff = eff.get('effectiveArea', 0.0) or 0.0
+        l_gap_eff = get_effective_residual_gap(magnetic_data, ae_eff)
+        if l_gap_eff > 0 and le > 0:
+            core_permeability = apply_residual_gap_to_permeability(mu_r, le, l_gap_eff)
+            print(f"\nMaterial: {material_name}, mu_r={mu_r:.0f}, "
+                  f"le={le*1e3:.1f}mm, l_gap_eff={l_gap_eff*1e6:.1f}µm → "
+                  f"mu_eff={core_permeability:.0f}")
+        else:
+            core_permeability = mu_r
+            print(f"\nMaterial: {material_name}, Initial permeability (25°C): {core_permeability:.0f} "
+                  f"(intentional gap modeled in geometry)")
     else:
         print(f"\nUsing specified permeability: {core_permeability:.0f}")
-    
+
     results['core_permeability'] = core_permeability
-    
+
     L_analytical = calculate_analytical_inductance(magnetic_data, num_turns)
     
     if L_analytical:
@@ -3567,7 +3922,7 @@ def validate_mas_file(
     os.makedirs(output_dir, exist_ok=True)
     
     try:
-        step_file, stl_file = build_geometry(magnetic_data, output_dir, max_turns=max_turns)
+        step_file, stl_file = build_geometry(magnetic_data, output_dir)
         print(f"Geometry saved to {step_file}")
     except Exception as e:
         results['error'] = f"Geometry build failed: {e}"
@@ -3793,7 +4148,6 @@ def main():
     parser = argparse.ArgumentParser(description="Validate Elmer inductance against PyMKF")
     parser.add_argument("mas_file", help="Path to MAS JSON file")
     parser.add_argument("-o", "--output", default=None, help="Output directory")
-    parser.add_argument("-t", "--turns", type=int, default=6, help="Max turns to use")
     parser.add_argument("-I", "--current", type=float, default=1.0, help="Test current (A)")
     parser.add_argument("-u", "--permeability", type=float, default=None, 
                         help="Core permeability (default: auto-detect from MAS material)")
@@ -3811,7 +4165,6 @@ def main():
     results = validate_mas_file(
         args.mas_file,
         args.output,
-        max_turns=args.turns,
         total_current=args.current,
         core_permeability=args.permeability,  # None = auto-detect
         method=args.method,
@@ -3827,7 +4180,6 @@ def main():
 def compute_inductance_matrix(
     mas_file: str,
     output_dir: str,
-    max_turns: int = 4,
     total_current: float = 1.0,
     core_permeability: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -3848,6 +4200,9 @@ def compute_inductance_matrix(
     # Load and prepare (same as validate_mas_file)
     data = load_mas_file(mas_file)
     magnetic_data = data.get('magnetic', data)
+    # Apply Litz conducting diameter so both geometry and SIF use the same cross-section.
+    # Must be done before extract_turns_info (which sets cross_section_area for J in SIF).
+    magnetic_data = apply_litz_conducting_diameter(magnetic_data)
     core_type = 'toroidal' if any(
         k in str(magnetic_data.get('core', {}).get('functionalDescription', {}).get('shape', ''))
         for k in ['T ', 'T_']
@@ -3862,7 +4217,12 @@ def compute_inductance_matrix(
         mat = func_desc.get('material', 'N87')
         if isinstance(mat, dict):
             mat = mat.get('name', 'N87')
-        core_permeability = get_material_permeability(mat)
+        mu_r = get_material_permeability(mat)
+        eff = core_data.get('processedDescription', {}).get('effectiveParameters', {}) or {}
+        le = eff.get('effectiveLength', 0.0) or 0.0
+        ae_eff = eff.get('effectiveArea', 0.0) or 0.0
+        l_gap_eff = get_effective_residual_gap(magnetic_data, ae_eff)
+        core_permeability = apply_residual_gap_to_permeability(mu_r, le, l_gap_eff)
 
     # Group turns by winding
     winding_turns = {}
@@ -3875,10 +4235,26 @@ def compute_inductance_matrix(
     N = len(winding_names)
     print(f"Windings: {winding_names} ({N} total)")
 
-    # Limit turns per winding
+    # Count parallel groups per winding from MAS functionalDescription.
+    # Needed to correct L_terminal = 2*W / (n_parallel * I_per_turn)²
+    winding_n_parallel = {}
+    coil_fd = magnetic_data.get('coil', {}).get('functionalDescription', [])
+    for wd in coil_fd:
+        wname_fd = wd.get('name', '')
+        n_par = wd.get('numberParallels', 1) or 1
+        winding_n_parallel[wname_fd] = n_par
+    # Fall back to counting from turn name if not in fd
     for wname in winding_names:
-        if max_turns and len(winding_turns[wname]) > max_turns:
-            winding_turns[wname] = winding_turns[wname][:max_turns]
+        if wname not in winding_n_parallel:
+            # Count unique "parallel N" indices in turn names for this winding
+            import re as _re
+            par_indices = set()
+            for t in winding_turns[wname]:
+                m = _re.search(r'parallel\s+(\d+)', t.name)
+                if m:
+                    par_indices.add(int(m.group(1)))
+            winding_n_parallel[wname] = max(len(par_indices), 1)
+    print(f"Parallel groups: { {w: winding_n_parallel.get(w, 1) for w in winding_names} }")
 
     # All turns for geometry (need all windings in the mesh)
     all_selected = []
@@ -3890,7 +4266,7 @@ def compute_inductance_matrix(
     # Build geometry ONCE (includes all windings)
     os.makedirs(output_dir, exist_ok=True)
     step_file, core_type_detected = build_geometry(
-        magnetic_data, output_dir, max_turns=max_turns, all_windings=True
+        magnetic_data, output_dir, all_windings=True
     )
 
     # Mesh ONCE
@@ -3899,6 +4275,16 @@ def compute_inductance_matrix(
         step_file, output_dir, all_selected, core_type=core_type
     )
     print(f"Mesh: {mesh_dir}, {len(turn_bodies)} turn bodies")
+
+    # Count mesh elements to choose solver: MUMPS for <300K, iterative for larger
+    elem_path = os.path.join(mesh_dir, "mesh.elements")
+    n_elements = 0
+    if os.path.exists(elem_path):
+        with open(elem_path) as ef:
+            n_elements = sum(1 for _ in ef)
+    use_iterative = n_elements > 300000
+    if use_iterative:
+        print(f"  Using iterative solver ({n_elements} elements > 300K threshold)")
 
     # Patch missing bodies helper
     def patch_sif(sif_path):
@@ -3936,16 +4322,21 @@ def compute_inductance_matrix(
             total_current=total_current,
             core_type=core_type,
             active_windings=[wname],
+            use_iterative_solver=use_iterative,
         )
         patch_sif(sif_path)
 
         print(f"\n--- Sim: excite {wname} only ---")
-        success, energy, output = run_elmer(sim_dir, timeout=600)
+        success, energy, output = run_elmer(sim_dir, timeout=1200 if use_iterative else 600)
         energies[wname] = energy
         L_self = calculate_inductance_from_energy(energy, total_current)
         print(f"  Energy={energy:.4e} J, L_{wname}={L_self*1e6:.2f} uH")
 
-    # Mutual inductance: excite pairs
+    # Mutual inductance: excite pairs with parallel currents (+I, +I).
+    # Natural MATC directions give parallel coupling (fields add) → large energy → no NaN.
+    # Formula: W_pp = 0.5*(L11 + 2*M12 + L22)*I^2
+    # => M12 = W_pp/I^2 - 0.5*(L11 + L22)
+    # Use iterative solver to avoid MUMPS segfault on combined excitation with 2 active windings.
     for i in range(N):
         for j in range(i + 1, N):
             wi, wj = winding_names[i], winding_names[j]
@@ -3961,28 +4352,39 @@ def compute_inductance_matrix(
                 total_current=total_current,
                 core_type=core_type,
                 active_windings=[wi, wj],
+                calculate_current_density=False,  # Nodal fields, no J: avoids CalcFields crash
+                use_iterative_solver=use_iterative,  # Use same as self-inductance sims
             )
             patch_sif(sif_path)
 
             print(f"\n--- Sim: excite {wi} + {wj} ---")
-            success, energy, output = run_elmer(sim_dir, timeout=600)
+            success, energy, output = run_elmer(sim_dir, timeout=1200)
             energies[(wi, wj)] = energy
             print(f"  Energy={energy:.4e} J")
 
-    # Compute inductance matrix
+    # Compute inductance matrix with parallel group correction.
+    # Each winding's terminal current = n_parallel * total_current (each of n_parallel groups
+    # carries total_current; all groups share the same terminal voltage).
+    # L_terminal = 2*W / I_terminal²  where I_terminal = n_parallel * total_current
     I = total_current
+    # Terminal current for each winding
+    I_terminal = [winding_n_parallel.get(wname, 1) * I for wname in winding_names]
+
     L_matrix = [[0.0] * N for _ in range(N)]
 
-    # Self-inductance
+    # Self-inductance: L_ii = 2*W_i / I_terminal_i²
     for i, wname in enumerate(winding_names):
-        L_matrix[i][i] = 2 * energies[wname] / I**2
+        L_matrix[i][i] = 2 * energies[wname] / I_terminal[i]**2
 
-    # Mutual inductance from combined energy
+    # Mutual inductance from parallel energy (+I, +I):
+    # W_pp = 0.5*L11*I1² + M12*I1*I2 + 0.5*L22*I2²
+    # M12 = (W_pp - 0.5*L11*I1² - 0.5*L22*I2²) / (I1 * I2)
     for i in range(N):
         for j in range(i + 1, N):
             wi, wj = winding_names[i], winding_names[j]
-            W_ij = energies.get((wi, wj), 0)
-            Mij = (W_ij - 0.5 * L_matrix[i][i] * I**2 - 0.5 * L_matrix[j][j] * I**2) / (I * I)
+            W_pp = energies.get((wi, wj), 0)
+            Mij = (W_pp - 0.5 * L_matrix[i][i] * I_terminal[i]**2
+                         - 0.5 * L_matrix[j][j] * I_terminal[j]**2) / (I_terminal[i] * I_terminal[j])
             L_matrix[i][j] = Mij
             L_matrix[j][i] = Mij
 
