@@ -268,7 +268,7 @@ class Ansyas:
         project
             The created PyAEDT project instance.
         """
-        from ansys.aedt.core import Maxwell3d, Icepak
+        from ansys.aedt.core import Maxwell3d, Icepak, Hfss
 
         project_name = f"{project_name}.aedt"
         self.project_path = os.path.join(
@@ -313,6 +313,15 @@ class Ansyas:
                     "Failed to initialize Icepak project. AEDT connection may have failed. "
                     "Ensure no other AEDT instances are running and try again."
                 )
+        elif self.solution_type == "Terminal":
+            self.project = Hfss(
+                project=self.project_name,
+                solution_type=solution_type,
+                non_graphical=non_graphical,
+                version=specified_version,
+                new_desktop=new_desktop_session,
+                close_on_exit=False
+            )
         else:
             self.project = Maxwell3d(
                 project=self.project_name,
@@ -554,6 +563,11 @@ class Ansyas:
         inputs = mas.inputs
         outputs = mas.outputs
 
+        # TODO: move conditional
+        if magnetic.core.functionalDescription.type.value.lower() == "toroidal":
+            self.generate_choke_descriptor(magnetic)
+            return
+
         self.create_builders(magnetic)
 
         core_parts = self.core_builder.import_core(
@@ -649,3 +663,164 @@ class Ansyas:
             self.outputs_extractor.get_results()
 
         self.save()
+
+    def generate_choke_descriptor(self, magnetic: MAS.Magnetic):
+
+        import json
+        from pathlib import Path
+
+        values = {
+            "Number of Windings": {"1": False, "2": True, "3": False, "4": False},
+            "Layer": {"Simple": False, "Double": True, "Triple": False},
+            "Layer Type": {"Separate": False, "Linked": True},
+            "Similar Layer": {"Similar": False, "Different": True},
+            "Mode": {"Differential": False, "Common": True},
+            "Wire Section": {"None": False, "Hexagon": True, "Octagon": False, "Circle": False},
+            "Core": {
+                "Name": "Core",
+                "Material": "ferrite",
+                "Inner Radius": magnetic.core.functionalDescription.shape.dimensions["B"]/2,
+                "Outer Radius": 30,
+                "Height": 10,
+                "Chamfer": 0.8,
+            },
+            "Outer Winding": {
+                "Name": "Winding",
+                "Material": "copper",
+                "Inner Radius": 20,
+                "Outer Radius": 30,
+                "Height": 10,
+                "Wire Diameter": 1.5,
+                "Turns": 20,
+                "Coil Pit(deg)": 0.1,
+                "Occupation(%)": 0,
+            },
+            "Mid Winding": {"Turns": 25, "Coil Pit(deg)": 0.1, "Occupation(%)": 0},
+            "Inner Winding": {"Turns": 4, "Coil Pit(deg)": 0.1, "Occupation(%)": 0},
+        }
+
+        # ## Convert dictionary to JSON file
+        #
+        # Convert the dictionary to a JSON file. You must supply the path of the
+        # JSON file as an argument.
+
+        json_path = Path(__file__).parents[2] / "toolkit_choke.json"
+        with json_path.open("w") as outfile:
+            json.dump(values, outfile)
+
+        # ## Verify parameters of JSON file
+        #
+        # Verify parameters of the JSON file. The ``check_choke_values()`` method takes
+        # the JSON file path as an argument and does the following:
+        #
+        # - Checks if the JSON file is correctly written (as explained earlier).
+        # - Checks equations on windings parameters to avoid having unintended intersections.
+
+        dictionary_values = self.project.modeler.check_choke_values(json_path, create_another_file=False)
+        print(dictionary_values)
+
+        # ## Create choke
+        #
+        # Create the choke. The ``Hfss.modeler.create_choke()`` method takes the JSON file path as an
+        # argument.
+
+        list_object = self.project.modeler.create_choke(json_path)
+        print(list_object)
+        core = list_object[1]
+        first_winding_list = list_object[2]
+        second_winding_list = list_object[3]
+
+        # ## Create ground
+
+        ground_radius = 1.2 * dictionary_values[1]["Outer Winding"]["Outer Radius"]
+        ground_position = [0, 0, first_winding_list[1][0][2] - 2]
+        ground = self.project.modeler.create_circle("XY", ground_position, ground_radius, name="GND", material="copper")
+        coat = self.project.assign_finite_conductivity(ground, is_infinite_ground=True)
+        ground.transparency = 0.9
+
+        # ## Create lumped ports
+
+        port_position_list = [
+            [
+                first_winding_list[1][0][0],
+                first_winding_list[1][0][1],
+                first_winding_list[1][0][2] - 1,
+            ],
+            [
+                first_winding_list[1][-1][0],
+                first_winding_list[1][-1][1],
+                first_winding_list[1][-1][2] - 1,
+            ],
+            [
+                second_winding_list[1][0][0],
+                second_winding_list[1][0][1],
+                second_winding_list[1][0][2] - 1,
+            ],
+            [
+                second_winding_list[1][-1][0],
+                second_winding_list[1][-1][1],
+                second_winding_list[1][-1][2] - 1,
+            ],
+        ]
+        port_dimension_list = [2, dictionary_values[1]["Outer Winding"]["Wire Diameter"]]
+        for position in port_position_list:
+            sheet = self.project.modeler.create_rectangle("XZ", position, port_dimension_list, name="sheet_port")
+            sheet.move([-dictionary_values[1]["Outer Winding"]["Wire Diameter"] / 2, 0, -1])
+            self.project.lumped_port(
+                assignment=sheet.name,
+                name="port_" + str(port_position_list.index(position) + 1),
+                reference=[ground],
+            )
+
+        # ## Create mesh
+
+        # +
+        cylinder_height = 2.5 * dictionary_values[1]["Outer Winding"]["Height"]
+        cylinder_position = [0, 0, first_winding_list[1][0][2] - 4]
+        mesh_operation_cylinder = self.project.modeler.create_cylinder(
+            "XY",
+            cylinder_position,
+            ground_radius,
+            cylinder_height,
+            num_sides=36,
+            name="mesh_cylinder",
+        )
+
+        self.project.mesh.assign_length_mesh(
+            [mesh_operation_cylinder],
+            maximum_length=15,
+            maximum_elements=None,
+            name="choke_mesh",
+        )
+        # -
+
+        # ## Create boundaries
+        #
+        # Create the boundaries. A region with openings is needed to run the analysis.
+
+        region = self.project.modeler.create_region(pad_percent=1000)
+
+        # ## Create setup
+        #
+        # Create a setup with a sweep to run the simulation. Depending on your machine's
+        # computing power, the simulation can take some time to run.
+
+        setup = self.project.create_setup("MySetup")
+        setup.props["Frequency"] = "50MHz"
+        setup["MaximumPasses"] = 10
+        self.project.create_linear_count_sweep(
+            setup=setup.name,
+            unit="MHz",
+            start_frequency=0.1,
+            stop_frequency=100,
+            num_of_freq_points=100,
+            name="sweep1",
+            sweep_type="Interpolating",
+            save_fields=False,
+        )
+
+        # ## Plot objects
+
+        self.project.modeler.fit_all()
+
+

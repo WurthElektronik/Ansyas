@@ -75,7 +75,7 @@ def main(args: Namespace) -> None:
 if __name__ == "__main__":
 
     # default command line arguments
-    default_mas = Path(__file__).resolve().parents[2] / "examples" / "concentric_transformer.json"
+    default_mas = Path(__file__).resolve().parents[2] / "examples" / "default_choke.json"
 
     parser = ArgumentParser(
         prog='Ansyas MAS Loader',
@@ -93,14 +93,14 @@ if __name__ == "__main__":
     parser.add_argument("--solution_type",
                         type=str,
                         required=False,
-                        default="EddyCurrent",
+                        default="Terminal",
                         help='Specify AEDT\'s solution type to run. Default is EddyCurrent. '
                              'Options are SteadyState, EddyCurrent, AC Magnetic, Transient, TransientAPhiFormulation.')
 
     parser.add_argument("--aedt_version",
                         type=str,
                         required=False,
-                        default="2025.2",
+                        default="2026.1",
                         help='Specify AEDT version number in format <year>.<release>. '
                              'For example: 2025R1 is 2025.1.')
 
@@ -177,7 +177,7 @@ if __name__ == "__main__":
     parser.add_argument("--output",
                         type=Path,
                         required=False,
-                        default=Path().cwd()/"output",
+                        default=Path().cwd()/"outputs",
                         help='Output directory where results are stored.'
                              'Default is the current working directory.')
 
