@@ -14,6 +14,8 @@ import os
 import logging
 from typing import Optional, List, Dict, Any, Union
 
+from scripts.regsetup import examples
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -668,35 +670,43 @@ class Ansyas:
 
         import json
         from pathlib import Path
+        import math
+
 
         values = {
             "Number of Windings": {"1": False, "2": True, "3": False, "4": False},
-            "Layer": {"Simple": False, "Double": True, "Triple": False},
-            "Layer Type": {"Separate": False, "Linked": True},
-            "Similar Layer": {"Similar": False, "Different": True},
+            "Layer": {"Simple": True, "Double": False, "Triple": False},
+            "Layer Type": {"Separate": True, "Linked": False},
+            "Similar Layer": {"Similar": True, "Different": False},
             "Mode": {"Differential": False, "Common": True},
             "Wire Section": {"None": False, "Hexagon": True, "Octagon": False, "Circle": False},
             "Core": {
                 "Name": "Core",
                 "Material": "ferrite",
-                "Inner Radius": magnetic.core.functionalDescription.shape.dimensions["B"]/2,
-                "Outer Radius": 30,
-                "Height": 10,
-                "Chamfer": 0.8,
+                "Inner Radius": magnetic.core.functionalDescription.shape.dimensions["B"].nominal/2,
+                "Outer Radius": magnetic.core.functionalDescription.shape.dimensions["A"].nominal/2,
+                "Height": magnetic.core.functionalDescription.shape.dimensions["C"].nominal,
+                "Chamfer": 0.001,
             },
             "Outer Winding": {
                 "Name": "Winding",
                 "Material": "copper",
-                "Inner Radius": 20,
-                "Outer Radius": 30,
-                "Height": 10,
-                "Wire Diameter": 1.5,
-                "Turns": 20,
-                "Coil Pit(deg)": 0.1,
-                "Occupation(%)": 0,
+                "Inner Radius": math.hypot(magnetic.coil.turnsDescription[0].coordinates[0],magnetic.coil.turnsDescription[0].coordinates[1]) ,
+                "Outer Radius": math.hypot(magnetic.coil.turnsDescription[0].additionalCoordinates[0][0],magnetic.coil.turnsDescription[0].additionalCoordinates[0][1]),
+                "Height": magnetic.core.functionalDescription.shape.dimensions["C"].nominal + magnetic.coil.functionalDescription[0].wire.outerDiameter.nominal,
+                "Wire Diameter": magnetic.coil.turnsDescription[0].dimensions[0],
+                "Turns": magnetic.coil.functionalDescription[0].numberTurns,
+                "Coil Pit(deg)": 2.673,
+                "Occupation(%)": 95.04,
             },
-            "Mid Winding": {"Turns": 25, "Coil Pit(deg)": 0.1, "Occupation(%)": 0},
-            "Inner Winding": {"Turns": 4, "Coil Pit(deg)": 0.1, "Occupation(%)": 0},
+            "Mid Winding": {"Turns": 32,
+                            "Coil Pit(deg)": 2.673,
+                            "Occupation(%)": 95.04},
+            "Inner Winding": {"Turns": 32,
+                              "Coil Pit(deg)": 2.673,
+                              "Occupation(%)": 95.04},
+            "Settings": {"Units": "meter"},
+            "Create Component": {"True": False, "False": True}
         }
 
         # ## Convert dictionary to JSON file
@@ -704,9 +714,9 @@ class Ansyas:
         # Convert the dictionary to a JSON file. You must supply the path of the
         # JSON file as an argument.
 
-        json_path = Path(__file__).parents[2] / "toolkit_choke.json"
+        json_path = Path(__file__).parents[2] /"examples"/"toolkit_choke.json"
         with json_path.open("w") as outfile:
-            json.dump(values, outfile)
+            json.dump(values, outfile, indent=4)
 
         # ## Verify parameters of JSON file
         #
@@ -731,11 +741,12 @@ class Ansyas:
         second_winding_list = list_object[3]
 
         # ## Create ground
+        mm = 1e-3
 
         ground_radius = 1.2 * dictionary_values[1]["Outer Winding"]["Outer Radius"]
-        ground_position = [0, 0, first_winding_list[1][0][2] - 2]
+        ground_position = [0, 0, first_winding_list[1][0][2] - 2*mm]
         ground = self.project.modeler.create_circle("XY", ground_position, ground_radius, name="GND", material="copper")
-        coat = self.project.assign_finite_conductivity(ground, is_infinite_ground=True)
+        coat = self.project.assign_finite_conductivity(ground, is_infinite_ground=False)
         ground.transparency = 0.9
 
         # ## Create lumped ports
@@ -744,31 +755,32 @@ class Ansyas:
             [
                 first_winding_list[1][0][0],
                 first_winding_list[1][0][1],
-                first_winding_list[1][0][2] - 1,
+                first_winding_list[1][0][2] - 1*mm,
             ],
             [
                 first_winding_list[1][-1][0],
                 first_winding_list[1][-1][1],
-                first_winding_list[1][-1][2] - 1,
+                first_winding_list[1][-1][2] - 1*mm,
             ],
             [
                 second_winding_list[1][0][0],
                 second_winding_list[1][0][1],
-                second_winding_list[1][0][2] - 1,
+                second_winding_list[1][0][2] - 1*mm,
             ],
             [
                 second_winding_list[1][-1][0],
                 second_winding_list[1][-1][1],
-                second_winding_list[1][-1][2] - 1,
+                second_winding_list[1][-1][2] - 1*mm,
             ],
         ]
-        port_dimension_list = [2, dictionary_values[1]["Outer Winding"]["Wire Diameter"]]
+
+        port_dimension_list = [2*mm, dictionary_values[1]["Outer Winding"]["Wire Diameter"]]
         for position in port_position_list:
             sheet = self.project.modeler.create_rectangle("XZ", position, port_dimension_list, name="sheet_port")
-            sheet.move([-dictionary_values[1]["Outer Winding"]["Wire Diameter"] / 2, 0, -1])
+            sheet.move([-dictionary_values[1]["Outer Winding"]["Wire Diameter"] / 2, 0, -1*mm])
             self.project.lumped_port(
                 assignment=sheet.name,
-                name="port_" + str(port_position_list.index(position) + 1),
+                name="port_" + str(port_position_list.index(position) + 1*mm),
                 reference=[ground],
             )
 
@@ -776,7 +788,7 @@ class Ansyas:
 
         # +
         cylinder_height = 2.5 * dictionary_values[1]["Outer Winding"]["Height"]
-        cylinder_position = [0, 0, first_winding_list[1][0][2] - 4]
+        cylinder_position = [0, 0, first_winding_list[1][0][2] - 4*mm]
         mesh_operation_cylinder = self.project.modeler.create_cylinder(
             "XY",
             cylinder_position,
